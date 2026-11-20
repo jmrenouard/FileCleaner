@@ -967,7 +967,7 @@ fn build_adhoc_config(args: &SweepArgs, dir: &Path) -> Result<Config> {
         || freeze_if_newest_older_than.is_some();
 
     let mut actions = Vec::new();
-    if args.rename_by_date {
+    if args.rename_by_date || args.rename_template.is_some() {
         actions.push(ActionStep::RenameByDate);
     }
     if args.compress.is_some() {
@@ -1890,6 +1890,143 @@ copy_truncate_to = "{}"
         assert_eq!(
             error_exit_code(&FileCleanerError::Serialization("x".to_string())),
             EXIT_OPERATIONAL_ERROR
+        );
+
+        // Exercise remaining CLI branches: quiet init, overwrite error, unsupported extension,
+        // ad-hoc --rename-template auto-enabling RenameByDate (Fix #3), and foreign PID status (Fix #4).
+        let init_yml = tmp.path().join("starter.yml");
+        assert_eq!(
+            execute_cli(Cli {
+                config: None,
+                dry_run: false,
+                json: false,
+                verbose: false,
+                quiet: true,
+                audit_log: None,
+                command: Commands::Init(InitArgs {
+                    output: Some(init_yml.clone()),
+                    profile: InitProfile::Spool,
+                    format: None,
+                    force: false,
+                }),
+            }),
+            EXIT_OK
+        );
+        assert_eq!(
+            execute_cli(Cli {
+                config: None,
+                dry_run: false,
+                json: true,
+                verbose: false,
+                quiet: false,
+                audit_log: None,
+                command: Commands::Init(InitArgs {
+                    output: Some(init_yml),
+                    profile: InitProfile::Spool,
+                    format: None,
+                    force: false,
+                }),
+            }),
+            EXIT_OPERATIONAL_ERROR
+        );
+
+        let bad_ext = tmp.path().join("bad.conf");
+        fs::write(&bad_ext, "ignored").unwrap();
+        assert_eq!(
+            execute_cli(Cli {
+                config: None,
+                dry_run: false,
+                json: false,
+                verbose: false,
+                quiet: false,
+                audit_log: None,
+                command: Commands::Validate(ValidateArgs {
+                    path: Some(bad_ext),
+                }),
+            }),
+            EXIT_CONFIG_OR_USAGE_ERROR
+        );
+
+        let adhoc_tpl_dir = tmp.path().join("adhoc_tpl");
+        let adhoc_tpl_dest = tmp.path().join("adhoc_tpl_dest");
+        fs::create_dir_all(&adhoc_tpl_dir).unwrap();
+        let raw_log = adhoc_tpl_dir.join("app.log");
+        fs::write(&raw_log, b"rotate me").unwrap();
+        let f_handle = fs::OpenOptions::new().write(true).open(&raw_log).unwrap();
+        f_handle
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000))
+            .unwrap();
+        assert_eq!(
+            execute_cli(Cli {
+                config: None,
+                dry_run: false,
+                json: false,
+                verbose: false,
+                quiet: true,
+                audit_log: None,
+                command: Commands::Run(SweepArgs {
+                    dir: Some(adhoc_tpl_dir.clone()),
+                    max_age: Some("1s".to_string()),
+                    rename_template: Some("%Y%m%d".to_string()),
+                    move_to: Some(adhoc_tpl_dest.clone()),
+                    ..SweepArgs::default()
+                }),
+            }),
+            EXIT_OK
+        );
+        assert!(adhoc_tpl_dest.join("app_20231114.log").exists());
+
+        // Foreign PID status branch + stopped status + stop when not running.
+        #[cfg(unix)]
+        let mut foreign = std::process::Command::new("sleep")
+            .arg("5")
+            .spawn()
+            .unwrap();
+        #[cfg(windows)]
+        let mut foreign = std::process::Command::new("ping")
+            .args(["-n", "6", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let foreign_pid = tmp.path().join("foreign_cli.pid");
+        fs::write(&foreign_pid, format!("{}\n", foreign.id())).unwrap();
+        assert_eq!(
+            execute_cli(Cli {
+                config: None,
+                dry_run: false,
+                json: false,
+                verbose: false,
+                quiet: false,
+                audit_log: None,
+                command: Commands::Daemon {
+                    action: DaemonCommands::Status {
+                        pid_file: Some(foreign_pid.clone()),
+                        state_file: None,
+                    }
+                },
+            }),
+            EXIT_DAEMON_ERROR
+        );
+        let _ = foreign.kill();
+        let _ = foreign.wait();
+        assert_eq!(
+            execute_cli(Cli {
+                config: None,
+                dry_run: false,
+                json: false,
+                verbose: false,
+                quiet: false,
+                audit_log: None,
+                command: Commands::Daemon {
+                    action: DaemonCommands::Stop {
+                        pid_file: Some(foreign_pid),
+                        stop_file: None,
+                        timeout: "1s".to_string(),
+                    }
+                },
+            }),
+            EXIT_OK
         );
     }
 }

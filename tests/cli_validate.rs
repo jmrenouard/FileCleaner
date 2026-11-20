@@ -42,4 +42,28 @@ max_files = 5
         .assert()
         .failure()
         .stderr(predicate::str::contains("at least one rule"));
+
+    // Positional `<PATH>` validation rejects invalid `rename_template` eagerly (Fix #2).
+    let bad_rename_toml = tmp.path().join("bad_rename.toml");
+    fs::write(
+        &bad_rename_toml,
+        format!(
+            r#"
+[[rules]]
+name = "logs"
+path = "{}"
+actions = ["rename_by_date"]
+rename_template = "%Q"
+"#,
+            target_dir.display().to_string().replace('\\', "\\\\")
+        ),
+    )
+    .unwrap();
+
+    Command::cargo_bin("filecleaner")
+        .unwrap()
+        .args(["validate", bad_rename_toml.to_str().unwrap()])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("rename_template"));
 }

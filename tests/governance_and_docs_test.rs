@@ -498,3 +498,138 @@ fn github_workflows_pin_actions_to_full_shas_and_avoid_run_interpolation() {
         "release.yml publish-release job must scope contents: write"
     );
 }
+
+fn heading_signature_outside_fences(markdown: &str) -> Vec<usize> {
+    let mut levels = Vec::new();
+    let mut in_fence = false;
+    for line in markdown.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        let hashes = line.chars().take_while(|c| *c == '#').count();
+        if hashes > 0 && line.chars().nth(hashes) == Some(' ') {
+            levels.push(hashes);
+        }
+    }
+    levels
+}
+
+fn extract_fenced_config_blocks(markdown: &str) -> Vec<(&'static str, usize, String)> {
+    let mut blocks = Vec::new();
+    let mut current_lang: Option<&'static str> = None;
+    let mut start_line = 0usize;
+    let mut buf = String::new();
+
+    for (idx, line) in markdown.lines().enumerate() {
+        let trimmed = line.trim();
+        if current_lang.is_none() {
+            if trimmed == "```toml" {
+                current_lang = Some("toml");
+                start_line = idx + 1;
+                buf.clear();
+            } else if trimmed == "```yaml" || trimmed == "```yml" {
+                current_lang = Some("yaml");
+                start_line = idx + 1;
+                buf.clear();
+            }
+        } else if trimmed.starts_with("```") {
+            let lang = current_lang.take().unwrap();
+            let has_rules = match lang {
+                "toml" => buf.contains("[[rules]]"),
+                "yaml" => buf.lines().any(|l| l.trim_start() == "rules:"),
+                _ => false,
+            };
+            if has_rules {
+                blocks.push((lang, start_line, buf.clone()));
+            }
+            buf.clear();
+        } else {
+            buf.push_str(line);
+            buf.push('\n');
+        }
+    }
+
+    blocks
+}
+
+#[test]
+fn howto_en_and_fr_editions_exist_and_keep_heading_parity() {
+    let root = manifest_dir();
+    let en_path = root.join("docs/en/HOWTO.md");
+    let fr_path = root.join("docs/fr/HOWTO.md");
+
+    let en = fs::read_to_string(&en_path).expect("docs/en/HOWTO.md must exist");
+    let fr = fs::read_to_string(&fr_path).expect("docs/fr/HOWTO.md must exist");
+
+    assert!(en.contains("../fr/HOWTO.md"));
+    assert!(en.contains("USER_GUIDE.md"));
+    assert!(fr.contains("../en/HOWTO.md"));
+    assert!(fr.contains("GUIDE_UTILISATEUR.md"));
+
+    assert_eq!(
+        heading_signature_outside_fences(&en),
+        heading_signature_outside_fences(&fr),
+        "docs/en/HOWTO.md and docs/fr/HOWTO.md must maintain identical heading structure"
+    );
+}
+
+#[test]
+fn all_documented_configs_and_examples_parse_and_validate() {
+    let root = manifest_dir();
+    let doc_paths = [
+        "README.md",
+        "README.fr.md",
+        "docs/en/HOWTO.md",
+        "docs/fr/HOWTO.md",
+        "docs/en/COOKBOOK_EXAMPLES.md",
+        "docs/fr/EXEMPLES_RECETTES.md",
+    ];
+
+    let mut validated_blocks = 0usize;
+    for rel in doc_paths {
+        let path = root.join(rel);
+        let content = fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+        for (lang, start_line, block) in extract_fenced_config_blocks(&content) {
+            let cfg: filecleaner::Config = match lang {
+                "toml" => toml::from_str(&block).unwrap_or_else(|e| {
+                    panic!("{rel}:{start_line} invalid TOML config block: {e}\n{block}")
+                }),
+                "yaml" => serde_yaml_ng::from_str(&block).unwrap_or_else(|e| {
+                    panic!("{rel}:{start_line} invalid YAML config block: {e}\n{block}")
+                }),
+                _ => unreachable!(),
+            };
+            cfg.validate().unwrap_or_else(|e| {
+                panic!("{rel}:{start_line} config validation failed: {e}\n{block}")
+            });
+            validated_blocks += 1;
+        }
+    }
+    assert!(
+        validated_blocks >= 10,
+        "expected >= 10 validated doc config blocks, found {validated_blocks}"
+    );
+
+    let examples_dir = root.join("examples");
+    let mut validated_examples = 0usize;
+    for entry in fs::read_dir(&examples_dir).expect("examples/ directory must exist") {
+        let path = entry.unwrap().path();
+        let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+        if matches!(ext, "toml" | "yaml" | "yml") {
+            filecleaner::Config::load_validated(&path).unwrap_or_else(|e| {
+                panic!("example config {} failed validation: {e}", path.display())
+            });
+            validated_examples += 1;
+        }
+    }
+    assert!(
+        validated_examples >= 1,
+        "expected at least one validated config in examples/"
+    );
+}

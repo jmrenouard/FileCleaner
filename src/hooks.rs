@@ -8,10 +8,10 @@ use crate::config::{ActionStep, CompressionFormat, HookConfig, HookFailurePolicy
 use crate::error::{FileCleanerError, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
 use std::ffi::OsStr;
-use std::io::{self, Read};
+use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -151,29 +151,40 @@ impl HookRunner for ProcessHookRunner {
             }
         };
 
-        // Drain up to 64 KiB of stderr on a background thread and send over a bounded channel
-        // so background grandchildren inheriting fd 2 cannot deadlock exit handling.
-        let (stderr_tx, stderr_rx) = mpsc::sync_channel::<Vec<u8>>(1);
+        // Drain up to 64 KiB of stderr into a shared buffer while discarding excess bytes until
+        // EOF so background grandchildren inheriting fd 2 preserve error text without deadlocking.
+        let captured_stderr = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let (eof_tx, eof_rx) = mpsc::sync_channel::<()>(1);
         if let Some(mut pipe) = child.stderr.take() {
+            let capture = Arc::clone(&captured_stderr);
             thread::spawn(move || {
-                let mut buf = Vec::new();
-                let _ = (&mut pipe)
-                    .take(MAX_HOOK_STDERR_BYTES as u64)
-                    .read_to_end(&mut buf);
-                let _ = io::copy(&mut pipe, &mut io::sink());
-                let _ = stderr_tx.send(buf);
+                let mut chunk = [0u8; 4096];
+                loop {
+                    match pipe.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            let mut guard = capture.lock().unwrap_or_else(|e| e.into_inner());
+                            let remaining = MAX_HOOK_STDERR_BYTES.saturating_sub(guard.len());
+                            if remaining > 0 {
+                                guard.extend_from_slice(&chunk[..n.min(remaining)]);
+                            }
+                        }
+                    }
+                }
+                let _ = eof_tx.send(());
             });
         } else {
-            drop(stderr_tx);
+            let _ = eof_tx.send(());
         }
 
         let start = Instant::now();
         loop {
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    let stderr_bytes = stderr_rx
-                        .recv_timeout(STDERR_DRAIN_GRACE)
-                        .unwrap_or_default();
+                    let _ = eof_rx.recv_timeout(STDERR_DRAIN_GRACE);
+                    let stderr_bytes = std::mem::take(
+                        &mut *captured_stderr.lock().unwrap_or_else(|e| e.into_inner()),
+                    );
                     let mut stderr_text = String::from_utf8_lossy(&stderr_bytes).trim().to_string();
                     if stderr_text.len() > MAX_HOOK_STDERR_BYTES {
                         let mut end = MAX_HOOK_STDERR_BYTES;

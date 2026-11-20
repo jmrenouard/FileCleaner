@@ -674,4 +674,57 @@ fn hook_grandchild_pipe_safety_stderr_cap_and_process_group_kill() {
         !alive,
         "timeout must kill background grandchild PID {gpid} via process group SIGKILL"
     );
+
+    // 4. Failing hook with lingering background grandchild still preserves stderr (Fix #1).
+    let fail_bg_pid = tmp.path().join("fail_bg.pid");
+    let fail_bg_script = write_executable_script(
+        tmp.path(),
+        "fail_bg.sh",
+        &format!(
+            "#!/usr/bin/env bash\nsleep 10 &\necho $! > \"{}\"\nprintf 's3 auth token expired\\n' >&2\nexit 17\n",
+            fail_bg_pid.display()
+        ),
+    );
+    let mut fail_bg_hook = make_hook_config(fail_bg_script.to_string_lossy().into_owned(), vec![]);
+    fail_bg_hook.timeout = Duration::from_secs(2);
+    let started_fail = Instant::now();
+    let fail_bg_err = runner.run(&candidate, &fail_bg_hook, false).unwrap_err();
+    assert!(started_fail.elapsed() < Duration::from_millis(500));
+    match fail_bg_err {
+        FileCleanerError::HookFailed {
+            exit_code, stderr, ..
+        } => {
+            assert_eq!(exit_code, Some(17));
+            assert_eq!(stderr, "s3 auth token expired");
+        }
+        other => panic!("expected HookFailed, got {other:?}"),
+    }
+    if let Ok(pid_raw) = fs::read_to_string(&fail_bg_pid) {
+        if let Ok(gpid) = pid_raw.trim().parse::<libc::pid_t>() {
+            if gpid > 1 {
+                unsafe {
+                    let _ = libc::kill(gpid, libc::SIGKILL);
+                }
+            }
+        }
+    }
+
+    // 5. Multi-byte UTF-8 stderr above 64 KiB truncates cleanly at a UTF-8 char boundary.
+    let utf8_script = write_executable_script(
+        tmp.path(),
+        "utf8_flood.sh",
+        "#!/usr/bin/env bash\nchunk='é€é€é€é€é€é€é€é€é€é€é€é€é€é€é€é€'\nline=\"$chunk$chunk$chunk$chunk$chunk$chunk$chunk$chunk$chunk$chunk\"\ni=0\nwhile [ \"$i\" -lt 100 ]; do printf '%s' \"$line\" >&2; i=$((i+1)); done\nexit 9\n",
+    );
+    let mut utf8_hook = make_hook_config(utf8_script.to_string_lossy().into_owned(), vec![]);
+    utf8_hook.timeout = Duration::from_secs(5);
+    match runner.run(&candidate, &utf8_hook, false).unwrap_err() {
+        FileCleanerError::HookFailed {
+            exit_code, stderr, ..
+        } => {
+            assert_eq!(exit_code, Some(9));
+            assert!(!stderr.is_empty());
+            assert!(stderr.len() <= 64 * 1024);
+        }
+        other => panic!("expected HookFailed, got {other:?}"),
+    }
 }

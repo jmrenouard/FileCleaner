@@ -127,6 +127,21 @@
   - Added regression tests across [`tests/actions_pipeline_test.rs`](../tests/actions_pipeline_test.rs), [`tests/hooks_pre_delete_test.rs`](../tests/hooks_pre_delete_test.rs), [`tests/retention_age_size_count_test.rs`](../tests/retention_age_size_count_test.rs), [`tests/in_use_detection_test.rs`](../tests/in_use_detection_test.rs), [`tests/daemon_and_cli_test.rs`](../tests/daemon_and_cli_test.rs), [`tests/governance_and_docs_test.rs`](../tests/governance_and_docs_test.rs), and unit modules.
   - Verified in WSL2 (`/var/tmp/filecleaner-target-verify`): `cargo fmt --all -- --check` PASS, `cargo clippy --all-targets -- -D warnings` PASS (Linux + `x86_64-pc-windows-gnu` + `aarch64-apple-darwin`), `cargo test --all-targets` PASS (`112/112`: `62` unit + `50` integration across 8 suites), and `cargo llvm-cov --fail-under-lines 90` PASS (`93.09%` lines, `90.85%` regions across `8,678` lines).
 
+### RCA-007 — Post-v1.0.1 Audit Edge Cases (Hook Stderr Drain, Ad-Hoc Rename Template, Foreign PID Status, and Cookbook JSON Schema) (`Issue #20`)
+
+- **Observed Symptom**:
+  1. A failing pre-delete hook that left a background grandchild holding `fd 2` open did not deliver captured `stderr` over the one-shot channel unless EOF completed before returning, risking lost failure diagnostics.
+  2. Malformed `rename_template` values (empty or invalid `strftime` specifiers such as `"%Q"`) passed `filecleaner validate` and failed only at action execution time; passing ad-hoc `--rename-template` without `--rename-by-date` silently ignored the template.
+  3. Recycled OS PIDs held by non-FileCleaner processes caused `daemon status` and `claim_pid_file` (which checked only `is_pid_alive`) to treat an unrelated process as an active FileCleaner daemon.
+  4. `docs/en/COOKBOOK_EXAMPLES.md` and `docs/fr/EXEMPLES_RECETTES.md` showed a flattened `check-in-use --json` payload without the real `{ all_safe, busy_count, reports: [...] }` envelope and `kind` tags.
+  5. Test coverage of `src/actions.rs` started below `90%` (`88.39%`) due to untested multi-chunk, `CopyTruncate`, `DryRun`, collision, and error-boundary branches.
+- **Root Cause Analysis (5 Whys)**:
+  - `hooks.rs` waited to receive the full byte buffer on EOF instead of reading incrementally into a shared bounded buffer with a drain grace timeout; `config.rs` checked `move_date_subdir` in `validate()` while skipping `rename_template`; `cli.rs` gated `ActionStep::RenameByDate` only on `--rename-by-date`; `daemon_stop` used `is_filecleaner_process` while `daemon_status`/`claim_pid_file` checked `is_pid_alive` alone; documentation JSON and code blocks were not yet cross-checked by integration tests.
+- **Applied Change / Fix**:
+  - Updated `src/hooks.rs` (`Arc<Mutex<Vec<u8>>>` bounded capture up to `64 KiB` at UTF-8 char boundaries + `STDERR_DRAIN_GRACE`), `src/config.rs` (eager `rename_template` validation), `src/cli.rs` (`rename_by_date || rename_template.is_some()`), `src/daemon.rs` (`is_live_filecleaner_pid`), `src/scanner.rs` (lean regex reuse), fixed Cookbook JSON examples, published EN/FR `HOWTO.md`, and enforced doc config validation in `tests/governance_and_docs_test.rs`.
+- **Result & Non-Regression Test**:
+  - Verified in WSL2 (`CARGO_TARGET_DIR=/var/tmp/filecleaner-target-plan`): `cargo fmt --all` PASS, 3-target `cargo clippy --all-targets -- -D warnings` PASS (`0` warnings), `cargo test --all-targets` PASS (`124/124` tests across `src/lib.rs` and `9` integration suites including `tests/product_workflows_e2e_test.rs`), and `cargo llvm-cov --fail-under-lines 90` PASS (`94.31%` line coverage across `9,100` lines; `actions.rs` lifted to `90.21%`, all modules `>= 90.21%`).
+
 ---
 
 ## 2. Technical Dead-Ends & Abandoned Leads (`IMP`)

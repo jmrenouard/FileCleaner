@@ -371,12 +371,17 @@ pub(crate) fn compile_rule_matchers(rule: &RuleConfig) -> Result<CompiledRuleMat
         None => None,
     };
 
-    // Validate filename_date_regex syntax whenever provided, even if time_basis != FilenameDate.
-    let pre_fn_regex = match &rule.filename_date_regex {
+    // Validate filename_date_regex syntax whenever non-empty, even if time_basis != FilenameDate.
+    let pre_fn_regex = match rule
+        .filename_date_regex
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         Some(pattern) => {
             Some(
                 Regex::new(pattern).map_err(|source| FileCleanerError::InvalidRegex {
-                    pattern: pattern.clone(),
+                    pattern: pattern.to_string(),
                     source,
                 })?,
             )
@@ -386,16 +391,11 @@ pub(crate) fn compile_rule_matchers(rule: &RuleConfig) -> Result<CompiledRuleMat
 
     let filename_date = if rule.time_basis == TimeBasis::FilenameDate {
         let trimmed_name = rule.name.trim();
-        let regex_str = rule
-            .filename_date_regex
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| {
-                FileCleanerError::ConfigValidation(format!(
-                    "rule '{trimmed_name}' uses time_basis=filename_date without filename_date_regex"
-                ))
-            })?;
+        let compiled_regex = pre_fn_regex.ok_or_else(|| {
+            FileCleanerError::ConfigValidation(format!(
+                "rule '{trimmed_name}' uses time_basis=filename_date without filename_date_regex"
+            ))
+        })?;
 
         let format = rule
             .filename_date_format
@@ -414,13 +414,6 @@ pub(crate) fn compile_rule_matchers(rule: &RuleConfig) -> Result<CompiledRuleMat
             )));
         }
 
-        let compiled_regex = match pre_fn_regex {
-            Some(re) if rule.filename_date_regex.as_deref() == Some(regex_str) => re,
-            _ => Regex::new(regex_str).map_err(|source| FileCleanerError::InvalidRegex {
-                pattern: regex_str.to_string(),
-                source,
-            })?,
-        };
         Some((compiled_regex, format.to_string()))
     } else {
         None
@@ -1153,5 +1146,62 @@ mod tests {
         assert!(del_names.contains(&"service.log.gz"));
         assert!(del_names.contains(&"app_20261120_090500.log"));
         assert!(!del_names.contains(&"audit.jsonl.1"));
+    }
+
+    #[test]
+    fn scanner_rejects_non_directory_root_and_applies_max_depth_size_bounds_and_rfc3339_dates() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("tree");
+        let sub = root.join("sub");
+        let deep = sub.join("deep");
+        fs::create_dir_all(&deep).unwrap();
+
+        let not_a_dir = root.join("plain.log");
+        fs::write(&not_a_dir, b"just a file").unwrap();
+        let file_root_rule = base_rule("not-dir", not_a_dir);
+        assert!(matches!(
+            Scanner::scan_rule(&file_root_rule, None, &DaemonConfig::default()),
+            Err(FileCleanerError::Io { .. })
+        ));
+
+        let f_top = root.join("evt_2026-11-20T09:00:00+00:00.log");
+        let f_sub_small = sub.join("evt_2026-11-19T09:00:00+00:00.log");
+        let f_sub_ok = sub.join("evt_2026-11-18T09:00:00+00:00.log");
+        let f_deep = deep.join("evt_2026-11-17T09:00:00+00:00.log");
+        fs::write(&f_top, b"12345").unwrap();
+        fs::write(&f_sub_small, b"1").unwrap();
+        fs::write(&f_sub_ok, b"1234").unwrap();
+        fs::write(&f_deep, b"12345").unwrap();
+
+        let mut rule = base_rule("depth-size-rfc", root);
+        rule.recursive = true;
+        rule.max_depth = Some(2);
+        rule.min_file_size = Some(2);
+        rule.max_file_size = Some(4);
+        rule.time_basis = TimeBasis::FilenameDate;
+        rule.filename_date_regex =
+            Some(r"evt_(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+\-]\d{2}:\d{2})".to_string());
+        rule.filename_date_format = Some("%Y-%m-%dT%H:%M:%S%:z".to_string());
+
+        let rep = Scanner::scan_rule(&rule, None, &DaemonConfig::default()).unwrap();
+        assert_eq!(rep.files.len(), 1);
+        assert_eq!(
+            rep.files[0].rel_path,
+            "sub/evt_2026-11-18T09:00:00+00:00.log"
+        );
+
+        // Pre-1970 UNIX_EPOCH conversion handles both exact-second and subsecond timestamps.
+        let p = Path::new("ancient");
+        let pre_exact =
+            system_time_to_utc(std::time::UNIX_EPOCH - std::time::Duration::from_secs(5), p)
+                .unwrap();
+        assert_eq!(pre_exact.timestamp(), -5);
+        let pre_subsec = system_time_to_utc(
+            std::time::UNIX_EPOCH - std::time::Duration::from_nanos(1_500_000_000),
+            p,
+        )
+        .unwrap();
+        assert_eq!(pre_subsec.timestamp(), -2);
+        assert_eq!(pre_subsec.timestamp_subsec_nanos(), 500_000_000);
     }
 }

@@ -5,7 +5,7 @@
 # FileCleaner v1.0.0 — Production Cookbook Examples
 
 > **Language Editions**: **English** · [Français (`docs/fr/EXEMPLES_RECETTES.md`)](../fr/EXEMPLES_RECETTES.md)  
-> **Related Docs**: [README](../../README.md) · [User Guide](USER_GUIDE.md) · [Formal Specifications](SPECIFICATIONS.md)
+> **Related Docs**: [README](../../README.md) · [5-Minute HOWTO](HOWTO.md) · [User Guide](USER_GUIDE.md) · [Formal Specifications](SPECIFICATIONS.md)
 
 Every configuration in this cookbook conforms strictly to `src/config.rs` and `Config::validate()` invariants (`INV-CFG-01`..`INV-CFG-12`). Test any recipe safely before touching files via `filecleaner validate` and `filecleaner plan`.
 
@@ -348,7 +348,7 @@ filecleaner run -c /etc/filecleaner/etl-spool.toml
 Expected `check-in-use` output for an actively transferring batch (`exit 10`):
 
 ```json
-{"path":"/var/spool/etl/incoming/batch_20261120_0900.parquet","is_busy":true,"reasons":["SidecarLock(/var/spool/etl/incoming/batch_20261120_0900.parquet.part)","MinIdleAge(age_ms=4120,min_idle_ms=30000)"]}
+{"all_safe":false,"busy_count":1,"reports":[{"path":"/var/spool/etl/incoming/batch_20261120_0900.parquet","is_busy":true,"reasons":[{"kind":"sidecar_lock","lock_path":"/var/spool/etl/incoming/batch_20261120_0900.parquet.part"},{"kind":"min_idle_age","age_ms":4120,"min_idle_ms":30000}]}]}
 ```
 
 Expected JSONL audit events showing a busy file skip (`skip_in_use`), an exit-`42` hook veto (`skip_hook`), and a verified archival (`acted`):

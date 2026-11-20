@@ -5,7 +5,7 @@
 # FileCleaner v1.0.0 — Exemples & Recettes de Production
 
 > **Éditions linguistiques** : [English (`docs/en/COOKBOOK_EXAMPLES.md`)](../en/COOKBOOK_EXAMPLES.md) · **Français**  
-> **Documents associés** : [README](../../README.fr.md) · [Guide utilisateur](GUIDE_UTILISATEUR.md) · [Spécifications formelles](SPECIFICATIONS.md)
+> **Documents associés** : [README](../../README.fr.md) · [HOWTO 5 minutes](HOWTO.md) · [Guide utilisateur](GUIDE_UTILISATEUR.md) · [Spécifications formelles](SPECIFICATIONS.md)
 
 Chaque configuration présentée dans ces recettes respecte strictement `src/config.rs` et les invariants `Config::validate()` (`INV-CFG-01`..`INV-CFG-12`). Validez toujours vos adaptations avec `filecleaner validate` et `filecleaner plan` avant toute exécution réelle.
 
@@ -348,7 +348,7 @@ filecleaner run -c /etc/filecleaner/etl-spool.toml
 Sortie `check-in-use` sur un fichier en cours de transfert (code `10`) :
 
 ```json
-{"path":"/var/spool/etl/incoming/batch_20261120_0900.parquet","is_busy":true,"reasons":["SidecarLock(/var/spool/etl/incoming/batch_20261120_0900.parquet.part)","MinIdleAge(age_ms=4120,min_idle_ms=30000)"]}
+{"all_safe":false,"busy_count":1,"reports":[{"path":"/var/spool/etl/incoming/batch_20261120_0900.parquet","is_busy":true,"reasons":[{"kind":"sidecar_lock","lock_path":"/var/spool/etl/incoming/batch_20261120_0900.parquet.part"},{"kind":"min_idle_age","age_ms":4120,"min_idle_ms":30000}]}]}
 ```
 
 Événements JSONL illustrant le saut d'un fichier actif (`skip_in_use`), un veto de hook par code `42` (`skip_hook`) et un archivage vérifié (`acted`) :

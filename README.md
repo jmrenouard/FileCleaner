@@ -11,8 +11,8 @@
 [![Release](https://img.shields.io/github/v/release/jmrenouard/FileCleaner?style=flat-square&logo=github&color=0ea5e9)](https://github.com/jmrenouard/FileCleaner/releases)
 [![CI](https://github.com/jmrenouard/FileCleaner/actions/workflows/ci.yml/badge.svg)](https://github.com/jmrenouard/FileCleaner/actions/workflows/ci.yml)
 [![Pure Rust](https://img.shields.io/badge/Rust-2021_Pure--Rust-10b981?style=flat-square&logo=rust)](Cargo.toml)
-[![Tests](https://img.shields.io/badge/Tests-95_Passed-3b82f6?style=flat-square)](docs/ACTION_LOGBOOK.md)
-[![Coverage](https://img.shields.io/badge/Coverage-92.85%25_llvm--cov-10b981?style=flat-square)](docs/ACTION_LOGBOOK.md)
+[![Tests](https://img.shields.io/badge/Tests-124_Passed-3b82f6?style=flat-square)](docs/ACTION_LOGBOOK.md)
+[![Coverage](https://img.shields.io/badge/Coverage-94.31%25_llvm--cov-10b981?style=flat-square)](docs/ACTION_LOGBOOK.md)
 [![Clippy](https://img.shields.io/badge/Clippy-0_Warnings-10b981?style=flat-square)](docs/ACTION_LOGBOOK.md)
 [![Targets](https://img.shields.io/badge/Targets-9_Cross--Platform_Binaries-0284c7?style=flat-square)](#9-target-cross-compilation-matrix)
 [![License](https://img.shields.io/badge/License-Apache_2.0-f59e0b?style=flat-square)](LICENSE)
@@ -43,6 +43,7 @@
 | Pillar | English Edition | Édition Française |
 | :--- | :--- | :--- |
 | **Overview & Quickstart** | [**`README.md`**](README.md) | [**`README.fr.md`**](README.fr.md) |
+| **Simple 5-Minute HOWTO** | [**5-Minute HOWTO (`docs/en/HOWTO.md`)**](docs/en/HOWTO.md) | [**HOWTO 5 minutes (`docs/fr/HOWTO.md`)**](docs/fr/HOWTO.md) |
 | **Operations & CLI Manual** | [**User Guide (`docs/en/USER_GUIDE.md`)**](docs/en/USER_GUIDE.md) | [**Guide utilisateur (`docs/fr/GUIDE_UTILISATEUR.md`)**](docs/fr/GUIDE_UTILISATEUR.md) |
 | **Production Recipes** | [**Cookbook Examples (`docs/en/COOKBOOK_EXAMPLES.md`)**](docs/en/COOKBOOK_EXAMPLES.md) | [**Exemples & Recettes (`docs/fr/EXEMPLES_RECETTES.md`)**](docs/fr/EXEMPLES_RECETTES.md) |
 | **Formal Architecture & Math** | [**Formal Specifications (`docs/en/SPECIFICATIONS.md`)**](docs/en/SPECIFICATIONS.md) | [**Spécifications formelles (`docs/fr/SPECIFICATIONS.md`)**](docs/fr/SPECIFICATIONS.md) |
@@ -151,7 +152,14 @@ filecleaner daemon stop -c filecleaner.toml --timeout 30s
 filecleaner daemon service-template --init-system systemd -c /etc/filecleaner/filecleaner.toml
 ```
 
-See the [User Guide](docs/en/USER_GUIDE.md) for every CLI flag and exit code (`0`, `1`, `2`, `3`, `4`, `10`), and the [Cookbook Examples](docs/en/COOKBOOK_EXAMPLES.md) for production recipes.
+Zero-config quick one-liner (preview before live cleanup, no config file required):
+
+```bash
+filecleaner plan --dir /var/log/app --include "*.log" --max-age 14d
+filecleaner run --dir /var/log/app --include "*.log" --max-age 14d
+```
+
+Start with the [5-Minute HOWTO](docs/en/HOWTO.md) for copy-paste one-liners, `backup_guard` recipes, and Bash/PowerShell hooks, see the [User Guide](docs/en/USER_GUIDE.md) for every CLI flag and exit code (`0`, `1`, `2`, `3`, `4`, `10`), and check the [Cookbook Examples](docs/en/COOKBOOK_EXAMPLES.md) for production deployments. Note: `plan` / `--dry-run` acquires non-exclusive checks and generated files use strict `0600` Unix permissions.
 
 ---
 
@@ -287,7 +295,7 @@ FileCleaner depends exclusively on pure-Rust crates (`miniz_oxide`, `lz4_flex`, 
 
 ## Contributing & Engineering Governance
 
-All FileCleaner changes follow strict engineering traceability and verified quality gates (Issue `#14` / PR `#15` baseline: `cargo fmt --all -- --check` clean, `cargo clippy --all-targets -- -D warnings` **`0` warnings**, **`95` tests passed** [`57` unit + `38` integration across `8` suites], and **`92.85%` line coverage** across `8,082` lines via `cargo llvm-cov --fail-under-lines 90`):
+All FileCleaner changes follow strict engineering traceability and verified quality gates (Issue `#20` / branch `feat/issue-20-audit-tests-simple-howto` baseline: `cargo fmt --all -- --check` clean, `cargo clippy --all-targets -- -D warnings` **`0` warnings** across Linux/Windows/macOS targets, **`124` tests passed** [`64` unit + `60` integration across `9` suites], and **`94.31%` line coverage** / **`92.45%` region coverage** across `9,100` lines via `cargo llvm-cov --fail-under-lines 90` with every `src/*.rs` module `>= 90.21%`):
 
 - [**`docs/ACTION_LOGBOOK.md`**](docs/ACTION_LOGBOOK.md) — Chronological engineering action logbook with verified test & coverage evidence.
 - [**`docs/RCA_REGISTER.md`**](docs/RCA_REGISTER.md) — Root cause analyses (`RCA`), rejected technical dead-ends (`IMP`), platform approximations (`APP`), and `v1.1` roadmap (`IDEA`).

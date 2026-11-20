@@ -1262,5 +1262,36 @@ mod tests {
         assert!(batch2[&f1].open_pids.contains(&child.id()));
         assert!(batch2[&f2].open_pids.is_empty());
         assert!(batch2[&missing].fatal_error.is_some());
+
+        // Single-path SweepLockProbe::check_proc_fd and disabled check_paths coverage.
+        assert!(probe.check_proc_fd(&f2).open_pids.is_empty());
+        let disabled_paths = InUseDetector::check_paths(
+            &[f1.clone(), tmp.path().to_path_buf(), missing.clone()],
+            &InUseConfig {
+                enabled: false,
+                ..InUseConfig::default()
+            },
+        );
+        assert_eq!(disabled_paths.len(), 3);
+        assert!(disabled_paths.iter().all(|r| !r.is_busy));
+
+        let mixed = InUseDetector::check_paths(
+            &[f2.clone(), tmp.path().to_path_buf(), missing.clone()],
+            &InUseConfig {
+                check_sidecar_locks: true,
+                sidecar_suffixes: vec!["".to_string(), ".lock".to_string()],
+                check_os_locks: false,
+                check_proc_fd: false,
+                ..InUseConfig::default()
+            },
+        );
+        assert_eq!(mixed.len(), 3);
+        assert!(!mixed[0].is_busy);
+        assert!(mixed[1].is_busy && mixed[2].is_busy);
+
+        // Self-held open file descriptor + missing-only target_inodes batch probe.
+        let _self_open = fs::File::open(&f2).unwrap();
+        let _ = probe.check_proc_fd(&f2);
+        let _ = probe.check_proc_fd(&missing);
     }
 }

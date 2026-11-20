@@ -11,8 +11,8 @@
 [![Release](https://img.shields.io/github/v/release/jmrenouard/FileCleaner?style=flat-square&logo=github&color=0ea5e9)](https://github.com/jmrenouard/FileCleaner/releases)
 [![CI](https://github.com/jmrenouard/FileCleaner/actions/workflows/ci.yml/badge.svg)](https://github.com/jmrenouard/FileCleaner/actions/workflows/ci.yml)
 [![Pure Rust](https://img.shields.io/badge/Rust-2021_Pure--Rust-10b981?style=flat-square&logo=rust)](Cargo.toml)
-[![Tests](https://img.shields.io/badge/Tests-95_Réussis-3b82f6?style=flat-square)](docs/ACTION_LOGBOOK.md)
-[![Couverture](https://img.shields.io/badge/Couverture-92.85%25_llvm--cov-10b981?style=flat-square)](docs/ACTION_LOGBOOK.md)
+[![Tests](https://img.shields.io/badge/Tests-124_Réussis-3b82f6?style=flat-square)](docs/ACTION_LOGBOOK.md)
+[![Couverture](https://img.shields.io/badge/Couverture-94.31%25_llvm--cov-10b981?style=flat-square)](docs/ACTION_LOGBOOK.md)
 [![Clippy](https://img.shields.io/badge/Clippy-0_Alerte-10b981?style=flat-square)](docs/ACTION_LOGBOOK.md)
 [![Cibles](https://img.shields.io/badge/Cibles-9_Binaires_Multiplateformes-0284c7?style=flat-square)](#matrice-de-compilation-croisée-9-cibles)
 [![Licence](https://img.shields.io/badge/Licence-Apache_2.0-f59e0b?style=flat-square)](LICENSE)
@@ -43,6 +43,7 @@
 | Pilier | Édition Française | English Edition |
 | :--- | :--- | :--- |
 | **Présentation & Démarrage** | [**`README.fr.md`**](README.fr.md) | [**`README.md`**](README.md) |
+| **Guide Pratique 5 Minutes** | [**HOWTO 5 minutes (`docs/fr/HOWTO.md`)**](docs/fr/HOWTO.md) | [**5-Minute HOWTO (`docs/en/HOWTO.md`)**](docs/en/HOWTO.md) |
 | **Manuel d'exploitation & CLI** | [**Guide utilisateur (`docs/fr/GUIDE_UTILISATEUR.md`)**](docs/fr/GUIDE_UTILISATEUR.md) | [**User Guide (`docs/en/USER_GUIDE.md`)**](docs/en/USER_GUIDE.md) |
 | **Recettes de production** | [**Exemples & Recettes (`docs/fr/EXEMPLES_RECETTES.md`)**](docs/fr/EXEMPLES_RECETTES.md) | [**Cookbook Examples (`docs/en/COOKBOOK_EXAMPLES.md`)**](docs/en/COOKBOOK_EXAMPLES.md) |
 | **Architecture & Mathématiques** | [**Spécifications formelles (`docs/fr/SPECIFICATIONS.md`)**](docs/fr/SPECIFICATIONS.md) | [**Formal Specifications (`docs/en/SPECIFICATIONS.md`)**](docs/en/SPECIFICATIONS.md) |
@@ -151,7 +152,14 @@ filecleaner daemon stop -c filecleaner.toml --timeout 30s
 filecleaner daemon service-template --init-system systemd -c /etc/filecleaner/filecleaner.toml
 ```
 
-Consultez le [Guide utilisateur](docs/fr/GUIDE_UTILISATEUR.md) pour la référence complète des options et codes de sortie (`0`, `1`, `2`, `3`, `4`, `10`), ainsi que [Exemples & Recettes](docs/fr/EXEMPLES_RECETTES.md) pour des déploiements prêts pour la production.
+Commande directe sans fichier de configuration (toujours prévisualiser avant d'exécuter) :
+
+```bash
+filecleaner plan --dir /var/log/app --include "*.log" --max-age 14d
+filecleaner run --dir /var/log/app --include "*.log" --max-age 14d
+```
+
+Commencez par le [HOWTO en 5 minutes](docs/fr/HOWTO.md) pour des exemples rapides, `backup_guard` et des hooks Bash/PowerShell, consultez le [Guide utilisateur](docs/fr/GUIDE_UTILISATEUR.md) pour la référence complète des options et codes de sortie (`0`, `1`, `2`, `3`, `4`, `10`), ainsi que [Exemples & Recettes](docs/fr/EXEMPLES_RECETTES.md) pour des déploiements prêts pour la production. Remarque : `plan` / `--dry-run` réalise des sondes non exclusives et les fichiers générés utilisent des permissions Unix strictes `0600`.
 
 ---
 
@@ -287,7 +295,7 @@ FileCleaner repose exclusivement sur des crates 100 % Rust (`miniz_oxide`, `lz4_
 
 ## Contribution et gouvernance technique
 
-Toute modification sur FileCleaner respecte une traçabilité rigoureuse et des seuils de qualité vérifiés (référence Issue `#14` / PR `#15` : `cargo fmt --all -- --check` conforme, `cargo clippy --all-targets -- -D warnings` **`0` alerte**, **`95` tests réussis** [`57` unitaires + `38` d'intégration sur `8` suites], et **`92.85%` de couverture de lignes** sur `8 082` lignes via `cargo llvm-cov --fail-under-lines 90`) :
+Toute modification sur FileCleaner respecte une traçabilité rigoureuse et des seuils de qualité vérifiés (référence Issue `#20` / branche `feat/issue-20-audit-tests-simple-howto` : `cargo fmt --all -- --check` conforme, `cargo clippy --all-targets -- -D warnings` **`0` alerte** sur Linux/Windows/macOS, **`124` tests réussis** [`64` unitaires + `60` d'intégration sur `9` suites], et **`94.31%` de couverture de lignes** / **`92.45%` de régions** sur `9 100` lignes via `cargo llvm-cov --fail-under-lines 90` avec chaque module `src/*.rs >= 90.21%`) :
 
 - [**`docs/ACTION_LOGBOOK.md`**](docs/ACTION_LOGBOOK.md) — Journal chronologique des actions et métriques de validation.
 - [**`docs/RCA_REGISTER.md`**](docs/RCA_REGISTER.md) — Analyses de causes racines (`RCA`), impasses écartées (`IMP`), approximations plateforme (`APP`) et feuille de route `v1.1` (`IDEA`).
