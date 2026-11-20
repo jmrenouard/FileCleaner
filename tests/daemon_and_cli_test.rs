@@ -6,9 +6,10 @@ use assert_cmd::Command;
 use chrono::{TimeZone, Utc};
 use filecleaner::{
     ActionStep, AuditConfig, BackupGuardConfig, CombineMode, CompressionFormat, Config,
-    DaemonConfig, DaemonState, DaemonStatus, DaemonStatusReport, EvictionOrder, FixedClock,
-    HookCandidate, HookConfig, HookFailurePolicy, HookRunner, HookVerdict, InUseConfig,
-    OsLockProbe, RuleConfig, RunOptions, SweepEngine, SweepReport, TimeBasis,
+    DaemonConfig, DaemonMode, DaemonOptions, DaemonRunner, DaemonState, DaemonStatus,
+    DaemonStatusReport, EvictionOrder, FixedClock, HookCandidate, HookConfig, HookFailurePolicy,
+    HookRunner, HookVerdict, InUseConfig, OsLockProbe, RuleConfig, RunOptions, SweepEngine,
+    SweepReport, TimeBasis,
 };
 use predicates::prelude::*;
 use std::collections::BTreeMap;
@@ -831,4 +832,205 @@ fn engine_mid_sweep_shutdown_completes_active_file_and_cancels_remaining_queue()
         let name = entry.unwrap().file_name().to_string_lossy().into_owned();
         assert!(!name.contains(".fc-tmp"));
     }
+}
+
+#[test]
+fn daemon_multi_sweep_in_place_rename_and_compress_are_idempotent() {
+    let tmp = TempDir::new().unwrap();
+    let logs_dir = tmp.path().join("logs");
+    let dumps_dir = tmp.path().join("dumps");
+    fs::create_dir_all(&logs_dir).unwrap();
+    fs::create_dir_all(&dumps_dir).unwrap();
+
+    let log_file = logs_dir.join("service.log");
+    let dump_file = dumps_dir.join("nightly.sql");
+    fs::write(&log_file, b"line-1\nline-2\n").unwrap();
+    fs::write(&dump_file, b"CREATE TABLE t(id INT);\n".repeat(16)).unwrap();
+
+    let old_ts = Utc::now().timestamp() - 3600;
+    set_mtime_unix(&log_file, old_ts);
+    set_mtime_unix(&dump_file, old_ts);
+
+    let rename_rule = RuleConfig {
+        name: "rename-logs".to_string(),
+        path: logs_dir.clone(),
+        enabled: true,
+        recursive: false,
+        max_depth: None,
+        follow_symlinks: false,
+        include_globs: vec!["*.log".to_string()],
+        exclude_globs: vec![],
+        include_regex: None,
+        exclude_regex: None,
+        min_file_size: None,
+        max_file_size: None,
+        time_basis: TimeBasis::Modified,
+        filename_date_regex: None,
+        filename_date_format: None,
+        max_files: None,
+        max_age: Some(Duration::from_secs(10)),
+        max_total_size: None,
+        combine_mode: CombineMode::Any,
+        eviction_order: EvictionOrder::OldestFirst,
+        dry_run: false,
+        backup_guard: BackupGuardConfig::default(),
+        in_use: InUseConfig {
+            check_os_locks: false,
+            check_proc_fd: false,
+            ..InUseConfig::default()
+        },
+        pre_delete_hook: None,
+        actions: vec![ActionStep::RenameByDate],
+        move_to: None,
+        move_date_subdir: None,
+        move_overwrite: false,
+        trash_dir: None,
+        compression: CompressionFormat::Gzip,
+        compression_level: None,
+        compress_remove_source: true,
+        compress_overwrite: false,
+        copy_truncate_to: None,
+        rename_template: Some("%Y%m%d_%H%M%S".to_string()),
+    };
+
+    let mut compress_rule = rename_rule.clone();
+    compress_rule.name = "compress-dumps".to_string();
+    compress_rule.path = dumps_dir.clone();
+    compress_rule.include_globs = vec![];
+    compress_rule.actions = vec![ActionStep::Compress];
+    compress_rule.rename_template = None;
+
+    let cfg = Config {
+        dry_run: false,
+        audit_log: None,
+        daemon: DaemonConfig {
+            mode: DaemonMode::Interval,
+            interval: Duration::from_millis(20),
+            watch: false,
+            debounce: Duration::from_millis(10),
+            sweep_on_start: true,
+            pid_file: Some(tmp.path().join("multi.pid")),
+            state_file: Some(tmp.path().join("multi.state.json")),
+            stop_file: Some(tmp.path().join("multi.stop")),
+        },
+        audit: AuditConfig::default(),
+        global_trash_dir: None,
+        rules: vec![rename_rule, compress_rule],
+    };
+
+    let final_state = DaemonRunner::run(
+        &cfg,
+        &DaemonOptions {
+            max_sweeps: Some(3),
+            ..DaemonOptions::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(final_state.sweeps_completed, 3);
+    assert_eq!(final_state.total_files_processed, 2);
+
+    let log_entries: Vec<String> = fs::read_dir(&logs_dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(log_entries.len(), 1);
+    assert!(log_entries[0].starts_with("service_") && log_entries[0].ends_with(".log"));
+    assert_eq!(
+        log_entries[0].matches('_').count(),
+        2,
+        "unexpected repeated date stamp in {}",
+        log_entries[0]
+    );
+
+    let dump_entries: Vec<String> = fs::read_dir(&dumps_dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(dump_entries, vec!["nightly.sql.gz".to_string()]);
+}
+
+#[test]
+fn cli_daemon_stop_refuses_foreign_non_filecleaner_pid_and_leaves_process_alive() {
+    let tmp = TempDir::new().unwrap();
+    let pid_file = tmp.path().join("foreign.pid");
+    let stop_file = tmp.path().join("foreign.stop");
+
+    #[cfg(unix)]
+    let mut foreign = StdCommand::new("sleep").arg("5").spawn().unwrap();
+    #[cfg(windows)]
+    let mut foreign = StdCommand::new("ping")
+        .args(["-n", "6", "127.0.0.1"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+
+    fs::write(&pid_file, format!("{}\n", foreign.id())).unwrap();
+
+    cli_bin()
+        .args([
+            "daemon",
+            "stop",
+            "--pid-file",
+            pid_file.to_str().unwrap(),
+            "--stop-file",
+            stop_file.to_str().unwrap(),
+            "--timeout",
+            "2s",
+        ])
+        .assert()
+        .code(4)
+        .stderr(predicate::str::contains("not filecleaner"));
+
+    assert!(!stop_file.exists());
+    assert!(foreign.try_wait().unwrap().is_none());
+
+    let _ = foreign.kill();
+    let _ = foreign.wait();
+}
+
+#[test]
+fn cli_check_in_use_batches_multiple_paths_with_single_stability_sleep() {
+    let tmp = TempDir::new().unwrap();
+    let old_s = Utc::now().timestamp() - 3600;
+    let mut paths = Vec::new();
+    for i in 0..4 {
+        let p = tmp.path().join(format!("batch_{i}.sql"));
+        fs::write(&p, b"stable-payload").unwrap();
+        set_mtime_unix(&p, old_s);
+        paths.push(p);
+    }
+
+    let mut args = vec![
+        "--json".to_string(),
+        "check-in-use".to_string(),
+        "--stability".to_string(),
+        "150ms".to_string(),
+        "--no-proc-fd".to_string(),
+        "--no-flock".to_string(),
+        "--no-windows-share".to_string(),
+    ];
+    for p in &paths {
+        args.push(p.to_str().unwrap().to_string());
+    }
+
+    let started = Instant::now();
+    let output = cli_bin()
+        .args(&args)
+        .assert()
+        .code(0)
+        .get_output()
+        .stdout
+        .clone();
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < Duration::from_millis(1500),
+        "batched check-in-use took {elapsed:?}"
+    );
+    let parsed: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(parsed["all_safe"], true);
+    assert_eq!(parsed["busy_count"], 0);
+    assert_eq!(parsed["reports"].as_array().unwrap().len(), 4);
 }

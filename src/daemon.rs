@@ -11,10 +11,9 @@ use chrono::{DateTime, Utc};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
-use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
@@ -23,7 +22,7 @@ use std::time::{Duration, Instant};
 
 const DAEMON_STATE_VERSION: &str = "1.0.0";
 const POLL_SLICE: Duration = Duration::from_millis(50);
-const STOP_POLL_SLICE: Duration = Duration::from_millis(25);
+const STOP_POLL_SLICE: Duration = Duration::from_millis(200);
 
 static DAEMON_TMP_SEQ: AtomicU64 = AtomicU64::new(1);
 static SIGNAL_HANDLER_INIT: OnceLock<std::result::Result<(), String>> = OnceLock::new();
@@ -237,6 +236,7 @@ impl DaemonRunner {
         hook_runner: &dyn HookRunner,
     ) -> Result<DaemonState> {
         config.validate()?;
+        let compiled = crate::scanner::Scanner::compile_config(config)?;
 
         let watch_mode = effective_watch_mode(&config.daemon, opts.mode_override);
         let pid = std::process::id();
@@ -342,7 +342,14 @@ impl DaemonRunner {
             state.next_sweep_at = None;
             write_state_file_opt(state_file.as_deref(), &state)?;
 
-            match SweepEngine::run_config(config, &run_opts, clock, lock_probe, hook_runner) {
+            match SweepEngine::run_config_precompiled(
+                config,
+                &compiled,
+                &run_opts,
+                clock,
+                lock_probe,
+                hook_runner,
+            ) {
                 Ok(report) => {
                     apply_sweep_report_to_state(&mut state, &report);
                     if report.interrupted {
@@ -505,6 +512,15 @@ pub fn daemon_stop(
         });
     }
 
+    // Verify PID belongs to a `filecleaner` process before writing stop_file or signaling.
+    if let Some(target_pid) = pid.filter(|&p| is_pid_alive(p)) {
+        if !is_filecleaner_process(target_pid) {
+            return Err(FileCleanerError::Daemon(format!(
+                "refusing to stop PID {target_pid}: process is not filecleaner"
+            )));
+        }
+    }
+
     let mut stop_file_written = false;
     if let Some(sf) = stop_file {
         write_atomic_bytes(sf, format!("stop {}\n", Utc::now().to_rfc3339()).as_bytes())?;
@@ -553,7 +569,7 @@ pub fn daemon_stop(
             }));
         }
 
-        thread::sleep(STOP_POLL_SLICE);
+        thread::sleep(STOP_POLL_SLICE.min(deadline.saturating_duration_since(Instant::now())));
     }
 }
 
@@ -747,41 +763,136 @@ fn is_non_linux_unix_zombie(pid: u32) -> bool {
 }
 
 #[cfg(windows)]
-fn is_windows_pid_alive(pid: u32) -> bool {
+mod win_proc {
     use std::ffi::c_void;
 
-    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
-    const STILL_ACTIVE: u32 = 259;
-    const ERROR_ACCESS_DENIED: i32 = 5;
+    pub(super) const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    pub(super) const STILL_ACTIVE: u32 = 259;
+    pub(super) const ERROR_ACCESS_DENIED: i32 = 5;
 
     #[link(name = "kernel32")]
     extern "system" {
-        fn OpenProcess(
+        pub(super) fn OpenProcess(
             dw_desired_access: u32,
             b_inherit_handle: i32,
             dw_process_id: u32,
         ) -> *mut c_void;
-        fn GetExitCodeProcess(h_process: *mut c_void, lp_exit_code: *mut u32) -> i32;
-        fn CloseHandle(h_object: *mut c_void) -> i32;
+        pub(super) fn GetExitCodeProcess(h_process: *mut c_void, lp_exit_code: *mut u32) -> i32;
+        pub(super) fn QueryFullProcessImageNameW(
+            h_process: *mut c_void,
+            dw_flags: u32,
+            lp_exe_name: *mut u16,
+            lpdw_size: *mut u32,
+        ) -> i32;
+        pub(super) fn CloseHandle(h_object: *mut c_void) -> i32;
+    }
+}
+
+fn is_filecleaner_process(pid: u32) -> bool {
+    if pid == std::process::id() {
+        return true;
     }
 
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(comm) = fs::read_to_string(format!("/proc/{pid}/comm")) {
+            if comm.to_ascii_lowercase().contains("filecleaner") {
+                return true;
+            }
+        }
+        if let Ok(exe) = fs::read_link(format!("/proc/{pid}/exe")) {
+            if exe
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .contains("filecleaner")
+            {
+                return true;
+            }
+        }
+        if let Ok(cmdline) = fs::read(format!("/proc/{pid}/cmdline")) {
+            if String::from_utf8_lossy(&cmdline)
+                .to_ascii_lowercase()
+                .contains("filecleaner")
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        let Ok(output) = std::process::Command::new("ps")
+            .args(["-o", "comm=", "-p", &pid.to_string()])
+            .output()
+        else {
+            return false;
+        };
+        if !output.status.success() {
+            return false;
+        }
+        String::from_utf8_lossy(&output.stdout)
+            .to_ascii_lowercase()
+            .contains("filecleaner")
+    }
+
+    #[cfg(windows)]
+    {
+        // SAFETY: `OpenProcess` is invoked with `PROCESS_QUERY_LIMITED_INFORMATION` and returns
+        // either null or an owned process handle closed unconditionally below.
+        let handle =
+            unsafe { win_proc::OpenProcess(win_proc::PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() {
+            return false;
+        }
+
+        let mut size: u32 = 4096;
+        let mut buf = vec![0u16; size as usize];
+        // SAFETY: `handle` is non-null from `OpenProcess` and `buf` has capacity `size`.
+        let ok =
+            unsafe { win_proc::QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut size) };
+        // SAFETY: `handle` is non-null and not closed elsewhere.
+        unsafe {
+            let _ = win_proc::CloseHandle(handle);
+        }
+
+        if ok == 0 {
+            return false;
+        }
+        let len = (size as usize).min(buf.len());
+        String::from_utf16_lossy(&buf[..len])
+            .to_ascii_lowercase()
+            .contains("filecleaner")
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
+#[cfg(windows)]
+fn is_windows_pid_alive(pid: u32) -> bool {
     // SAFETY: `OpenProcess` is invoked with `PROCESS_QUERY_LIMITED_INFORMATION` and returns either
     // null or an owned process handle closed unconditionally below.
-    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    let handle =
+        unsafe { win_proc::OpenProcess(win_proc::PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
     if handle.is_null() {
-        return std::io::Error::last_os_error().raw_os_error() == Some(ERROR_ACCESS_DENIED);
+        return std::io::Error::last_os_error().raw_os_error()
+            == Some(win_proc::ERROR_ACCESS_DENIED);
     }
 
     let mut exit_code: u32 = 0;
     // SAFETY: `handle` is a non-null process handle from `OpenProcess` and `exit_code` points to
     // valid stack storage; `CloseHandle` releases `handle` immediately afterward.
-    let ok = unsafe { GetExitCodeProcess(handle, &mut exit_code) };
+    let ok = unsafe { win_proc::GetExitCodeProcess(handle, &mut exit_code) };
     // SAFETY: `handle` is non-null and not closed elsewhere.
     unsafe {
-        let _ = CloseHandle(handle);
+        let _ = win_proc::CloseHandle(handle);
     }
 
-    ok != 0 && exit_code == STILL_ACTIVE
+    ok != 0 && exit_code == win_proc::STILL_ACTIVE
 }
 
 #[cfg(unix)]
@@ -867,6 +978,15 @@ fn write_state_file_opt(state_file: Option<&Path>, state: &DaemonState) -> Resul
 }
 
 fn write_atomic_bytes(target: &Path, data: &[u8]) -> Result<()> {
+    write_atomic_bytes_with_mode(target, data, 0o600)
+}
+
+/// Atomically writes `data` to `target` via a uniquely named `.fc-tmp` sibling with explicit Unix permissions.
+pub(crate) fn write_atomic_bytes_with_mode(
+    target: &Path,
+    data: &[u8],
+    unix_mode: u32,
+) -> Result<()> {
     if let Some(parent) = target.parent() {
         if !parent.as_os_str().is_empty() {
             fs::create_dir_all(parent).map_err(|err| FileCleanerError::io(parent, err))?;
@@ -879,11 +999,25 @@ fn write_atomic_bytes(target: &Path, data: &[u8]) -> Result<()> {
     let staged_tmp = PathBuf::from(tmp_os);
 
     let write_res = (|| -> Result<()> {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
+        let mut open_opts = OpenOptions::new();
+        open_opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            open_opts.mode(unix_mode);
+        }
+        #[cfg(not(unix))]
+        let _ = unix_mode;
+
+        let mut file = open_opts
             .open(&staged_tmp)
             .map_err(|err| FileCleanerError::io(&staged_tmp, err))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&staged_tmp, fs::Permissions::from_mode(unix_mode))
+                .map_err(|err| FileCleanerError::io(&staged_tmp, err))?;
+        }
         file.write_all(data)
             .map_err(|err| FileCleanerError::io(&staged_tmp, err))?;
         file.flush()
@@ -1041,7 +1175,7 @@ fn is_relevant_fs_event(event: &Event, ignored_paths: &HashSet<PathBuf>) -> bool
         if is_tmp {
             return false;
         }
-        let norm = normalize_lexical(path);
+        let norm = crate::config::resolve_path_lexically(path);
         !ignored_paths.contains(path) && !ignored_paths.contains(&norm)
     })
 }
@@ -1058,60 +1192,16 @@ fn build_ignored_paths(audit_log: Option<&Path>, daemon: &DaemonConfig) -> HashS
     .flatten()
     {
         set.insert(p.to_path_buf());
-        set.insert(normalize_lexical(p));
+        set.insert(crate::config::resolve_path_lexically(p));
+    }
+    if let Some(audit) = audit_log {
+        let mut rotated_os = audit.as_os_str().to_os_string();
+        rotated_os.push(".1");
+        let rotated = PathBuf::from(rotated_os);
+        set.insert(crate::config::resolve_path_lexically(&rotated));
+        set.insert(rotated);
     }
     set
-}
-
-fn normalize_lexical(path: &Path) -> PathBuf {
-    let abs = if path.is_absolute() {
-        path.to_path_buf()
-    } else if let Ok(cwd) = std::env::current_dir() {
-        cwd.join(path)
-    } else {
-        path.to_path_buf()
-    };
-
-    let mut stack: Vec<Component<'_>> = Vec::new();
-    for comp in abs.components() {
-        match comp {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if matches!(stack.last(), Some(Component::Normal(_))) {
-                    stack.pop();
-                }
-            }
-            other => stack.push(other),
-        }
-    }
-
-    let mut lexical = PathBuf::new();
-    for comp in stack {
-        lexical.push(comp.as_os_str());
-    }
-
-    let mut existing = lexical.as_path();
-    let mut tail: Vec<OsString> = Vec::new();
-    while !existing.exists() {
-        if let Some(name) = existing.file_name() {
-            tail.push(name.to_os_string());
-        } else {
-            break;
-        }
-        match existing.parent() {
-            Some(parent) => existing = parent,
-            None => break,
-        }
-    }
-
-    if let Ok(mut canon) = fs::canonicalize(existing) {
-        for seg in tail.into_iter().rev() {
-            canon.push(seg);
-        }
-        canon
-    } else {
-        lexical
-    }
 }
 
 fn apply_sweep_report_to_state(state: &mut DaemonState, report: &SweepReport) {
@@ -1288,6 +1378,12 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(state_path).unwrap()).unwrap();
         assert_eq!(parsed.status, DaemonStatus::Stopped);
         assert_eq!(parsed.sweeps_completed, 2);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(state_path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
     }
 
     #[test]
@@ -1669,30 +1765,35 @@ mod tests {
         let final_st = handle.join().unwrap().unwrap();
         assert_eq!(final_st.status, DaemonStatus::Stopped);
 
-        // 2. PID-based stop timeout when child traps SIGTERM (synchronize on READY before signaling).
+        // 2. PID-based stop refuses to signal or write stop_file for foreign non-filecleaner processes.
         #[cfg(unix)]
-        {
-            use std::io::{BufRead, BufReader};
-            use std::process::Stdio;
-            let mut trap_child = std::process::Command::new("sh")
-                .arg("-c")
-                .arg("trap '' TERM; printf 'READY\\n'; sleep 5")
-                .stdout(Stdio::piped())
-                .spawn()
-                .unwrap();
-            let mut reader = BufReader::new(trap_child.stdout.take().unwrap());
-            let mut ready = String::new();
-            reader.read_line(&mut ready).unwrap();
-            assert_eq!(ready.trim(), "READY");
+        let mut sleep_child = std::process::Command::new("sleep")
+            .arg("5")
+            .spawn()
+            .unwrap();
+        #[cfg(windows)]
+        let mut sleep_child = std::process::Command::new("ping")
+            .args(["-n", "6", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
 
-            let trap_pid_file = tmp.path().join("trap.pid");
-            fs::write(&trap_pid_file, format!("{}\n", trap_child.id())).unwrap();
+        let foreign_pid_file = tmp.path().join("foreign.pid");
+        let foreign_stop_file = tmp.path().join("foreign.stop");
+        fs::write(&foreign_pid_file, format!("{}\n", sleep_child.id())).unwrap();
 
-            let timeout_err =
-                daemon_stop(Some(&trap_pid_file), None, Duration::from_millis(60)).unwrap_err();
-            assert!(matches!(timeout_err, FileCleanerError::Daemon(_)));
-            let _ = trap_child.kill();
-            let _ = trap_child.wait();
-        }
+        let err = daemon_stop(
+            Some(&foreign_pid_file),
+            Some(&foreign_stop_file),
+            Duration::from_millis(200),
+        )
+        .unwrap_err();
+        assert!(matches!(err, FileCleanerError::Daemon(_)));
+        assert!(err.to_string().contains("not filecleaner"));
+        assert!(!foreign_stop_file.exists());
+        assert!(sleep_child.try_wait().unwrap().is_none());
+        let _ = sleep_child.kill();
+        let _ = sleep_child.wait();
     }
 }

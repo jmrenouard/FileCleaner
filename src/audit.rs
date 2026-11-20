@@ -4,10 +4,13 @@ use crate::config::AuditConfig;
 use crate::error::{FileCleanerError, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+
+/// Default maximum audit log size in bytes (`50 MiB`) before rotating to `<path>.1`.
+pub const DEFAULT_AUDIT_ROTATE_BYTES: u64 = 50 * 1024 * 1024;
 
 /// Event classification emitted into FileCleaner's structured JSONL audit log.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,9 +174,15 @@ impl AuditEntry {
     }
 }
 
+struct AuditSinkState {
+    writer: Option<Box<dyn Write + Send>>,
+    current_bytes: u64,
+    max_bytes: u64,
+}
+
 /// Thread-safe synchronous UTF-8 JSONL audit writer.
 pub struct AuditLogger {
-    sink: Option<Mutex<Box<dyn Write + Send>>>,
+    sink: Option<Mutex<AuditSinkState>>,
     path: Option<PathBuf>,
 }
 
@@ -195,22 +204,36 @@ impl AuditLogger {
         }
     }
 
-    /// Opens or creates a JSONL audit log file in append mode, creating parent directories as needed.
+    /// Opens or creates a JSONL audit log file in append mode with `50 MiB` `.1` rotation.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_with_max_bytes(path, DEFAULT_AUDIT_ROTATE_BYTES)
+    }
+
+    /// Opens or creates a JSONL audit log file with private permissions (`0o600` on Unix)
+    /// and single-generation `.1` rotation when reaching `max_bytes`.
+    pub fn open_with_max_bytes(path: impl AsRef<Path>, max_bytes: u64) -> Result<Self> {
         let path = path.as_ref();
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
                 fs::create_dir_all(parent).map_err(|err| FileCleanerError::io(parent, err))?;
             }
         }
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .map_err(|err| FileCleanerError::io(path, err))?;
-        let writer = BufWriter::new(file);
+        let file = open_private_audit_file(path, false)?;
+        let current_bytes = file
+            .metadata()
+            .map_err(|err| FileCleanerError::io(path, err))?
+            .len();
+
+        let mut state = AuditSinkState {
+            writer: Some(Box::new(BufWriter::new(file))),
+            current_bytes,
+            max_bytes,
+        };
+        if max_bytes > 0 && state.current_bytes >= max_bytes {
+            rotate_audit_file(path, &mut state)?;
+        }
         Ok(Self {
-            sink: Some(Mutex::new(Box::new(writer))),
+            sink: Some(Mutex::new(state)),
             path: Some(path.to_path_buf()),
         })
     }
@@ -229,7 +252,11 @@ impl AuditLogger {
     /// Wraps an arbitrary `Write + Send` sink for deterministic testing or stdout streaming.
     pub fn from_writer(writer: impl Write + Send + 'static) -> Self {
         Self {
-            sink: Some(Mutex::new(Box::new(writer))),
+            sink: Some(Mutex::new(AuditSinkState {
+                writer: Some(Box::new(writer)),
+                current_bytes: 0,
+                max_bytes: 0,
+            })),
             path: None,
         }
     }
@@ -257,10 +284,25 @@ impl AuditLogger {
         let mut guard = mutex.lock().map_err(|err| {
             FileCleanerError::Serialization(format!("audit logger mutex poisoned: {err}"))
         })?;
-        guard
+        if let Some(path) = self.path.as_deref() {
+            if guard.max_bytes > 0 && guard.current_bytes >= guard.max_bytes {
+                rotate_audit_file(path, &mut guard)?;
+            } else if guard.writer.is_none() {
+                let file = open_private_audit_file(path, false)?;
+                guard.writer = Some(Box::new(BufWriter::new(file)));
+            }
+        }
+        let writer = guard.writer.as_mut().ok_or_else(|| {
+            self.wrap_io_error(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "audit writer is unavailable",
+            ))
+        })?;
+        writer
             .write_all(line.as_bytes())
             .map_err(|err| self.wrap_io_error(err))?;
-        guard.flush().map_err(|err| self.wrap_io_error(err))?;
+        writer.flush().map_err(|err| self.wrap_io_error(err))?;
+        guard.current_bytes = guard.current_bytes.saturating_add(line.len() as u64);
         Ok(())
     }
 
@@ -271,6 +313,51 @@ impl AuditLogger {
             .unwrap_or_else(|| PathBuf::from("<audit-writer>"));
         FileCleanerError::io(path, err)
     }
+}
+
+fn open_private_audit_file(path: &Path, truncate: bool) -> Result<File> {
+    let mut opts = OpenOptions::new();
+    opts.create(true);
+    if truncate {
+        opts.write(true).truncate(true);
+    } else {
+        opts.append(true);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let file = opts
+        .open(path)
+        .map_err(|err| FileCleanerError::io(path, err))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .map_err(|err| FileCleanerError::io(path, err))?;
+    }
+    Ok(file)
+}
+
+fn rotate_audit_file(path: &Path, state: &mut AuditSinkState) -> Result<()> {
+    if let Some(writer) = state.writer.as_mut() {
+        writer
+            .flush()
+            .map_err(|err| FileCleanerError::io(path, err))?;
+    }
+    drop(state.writer.take());
+
+    let mut rotated_os = path.as_os_str().to_os_string();
+    rotated_os.push(".1");
+    let rotated_path = PathBuf::from(rotated_os);
+
+    fs::rename(path, &rotated_path).map_err(|err| FileCleanerError::io(&rotated_path, err))?;
+
+    let fresh_file = open_private_audit_file(path, true)?;
+    state.writer = Some(Box::new(BufWriter::new(fresh_file)));
+    state.current_bytes = 0;
+    Ok(())
 }
 
 /// Aggregated per-rule execution summary used for CLI tables and `--json` reports.

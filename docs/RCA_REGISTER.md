@@ -100,6 +100,35 @@
 
 ---
 
+### RCA-006 — Ponytail Security, Correctness, Scale, and CI Hardening Audit (`Issue #18`)
+- **Date / Linked Action**: `2026-11-20` (`ACT-007` / Issue `#18`)
+- **Observed Symptom**:
+  - A full post-`v1.0.0` Ponytail engineering and security audit uncovered 6 critical security/correctness/scale defects alongside 8 companion CI, permission, latency, and code-deduplication improvements:
+    1. **Symlink-swap TOCTOU & world-readable staging (`#1`)**: `copy_stream_with_sha256`, `compress_file_staged`, `execute_copy_truncate`, and `execute_pipeline` opened candidate files with default following semantics and default umask `.fc-tmp` staging, allowing a symlink swapped after `Scanner::scan_rule` to hijack reads, overwrites, or truncation.
+    2. **Daemon in-place `.gz.gz` / `_date_date` infinite loop (`#2`)**: Repeated daemon sweeps re-matched already date-stamped or already compressed files on rules lacking terminal removal steps, appending duplicate `_YYYYMMDD_HHMMSS` stamps and `.gz.gz` extensions indefinitely.
+    3. **In-place quota accounting error (`#3`)**: `RetentionEngine::plan` unconditionally decremented `remaining_files` and `remaining_bytes` for every evicted candidate, falsely reporting `max_files` / `max_total_size` satisfied on `RenameByDate`, `Compress` (`compress_remove_source = false`), and `CopyTruncate` (`min_file_size > 0` vs `0`) instead of `RuleOutcome::Constrained`.
+    4. **Hook grandchild pipe deadlock & unbounded output (`#4`)**: `ProcessHookRunner` piped child stdout and joined a blocking stderr thread after child exit; background grandchildren inheriting FDs blocked `wait()` until timeout, while unconstrained stdout/stderr risked memory exhaustion.
+    5. **Intrusive exclusive OS lock probing (`#5`)**: `plan`/`--dry-run` took exclusive `flock(LOCK_EX)` / Windows `share_mode(0)` probes on every file including protected floor $P_{\text{floor}}$ and recent files before checking sidecars, `/proc`, or `min_idle_age`.
+    6. **Recycled-PID `SIGTERM` risk in `daemon stop` (`#6`)**: `daemon_stop` signaled any live PID found in `pid_file` without verifying executable identity, risking killing an unrelated process after an ungraceful crash and OS PID reuse.
+    - Companion remediations (`#7`–`#14`): unpinned GitHub Actions tags and script interpolation in workflows (`#7`), default-umask audit/state files and unbounded `audit.jsonl` growth (`#8`), per-rule `/proc` re-walking + redundant `read_link` (`#9`), coarse stop polling (`#10`), missing adversarial regression tests (`#11`), duplicated path normalizers (`#12`), repeated rule regex/glob compilation and duplicate CLI atomic writer (`#13`), and serial `check-in-use` stability sleeps (`#14`).
+- **Root Cause Analysis (5 Whys)**:
+  1. *Why were TOCTOU and FD/PID hazards possible across multi-phase boundaries?* Because scan, lock-probe, retention, hook, and execution phases operated over plain `PathBuf` / numeric `pid` tokens without kernel handle pinning (`O_NOFOLLOW` / `FILE_FLAG_OPEN_REPARSE_POINT`), `(dev, ino)` continuity, or process image validation.
+  2. *Why did daemon sweeps loop on in-place transforms and misreport quotas?* Because `Scanner` and `ActionExecutor` lacked idempotency checks for already stamped/compressed outputs, and `RetentionEngine::plan` treated all action pipelines identically to `Delete`.
+  3. *Why did hook execution and lock probing introduce hang/contention/O(N) latency risks?* Because `ProcessHookRunner` blocked on inherited pipe EOF instead of `Stdio::null()` + bounded `mpsc` timeout, `InUseDetector` probed OS locks eagerly before cheaper/non-intrusive layers, and `cli check-in-use` looped per path.
+- **Applied Change / Fix**:
+  - [`src/actions.rs`](../src/actions.rs) & [`src/engine.rs`](../src/engine.rs): Added `open_staged_tmp_private` (`0o600`), `open_regular_nofollow_read` / `open_regular_nofollow_write` (`O_NOFOLLOW` + `(dev, ino)` verification on Unix; `FILE_FLAG_OPEN_REPARSE_POINT` + reparse-point bit check on Windows), `execute_copy_truncate` pre/post identity check, pre-execute symlink re-check, plus `has_compressed_extension` / `has_trailing_date_stamp` idempotency.
+  - [`src/scanner.rs`](../src/scanner.rs) & [`src/config.rs`](../src/config.rs): Added `CompiledRuleMatchers` / `compile_rule_matchers`, `Scanner::compile_config` / `scan_rule_compiled`, scanner-level in-place idempotency skip, `<audit_log>.1` exclusion, and unified `crate::config::resolve_path_lexically`.
+  - [`src/policy.rs`](../src/policy.rs): Added `compute_protected_floor_paths` and tracked `removes_file` / `reclaims_bytes` separately so `remaining_files`, `remaining_bytes`, and `RuleOutcome::Constrained` stay exact for in-place transforms and `CopyTruncate`.
+  - [`src/hooks.rs`](../src/hooks.rs): Switched stdout to `Stdio::null()`, capped stderr to `64 KiB` via `sync_channel` (`50 ms` drain grace), isolated Unix `process_group(0)`, and added `kill_hook_process_tree` (`SIGKILL` to `-pgid` on timeout).
+  - [`src/in_use.rs`](../src/in_use.rs) & [`src/cli.rs`](../src/cli.rs): Added `LockProbe::check_os_lock_readonly` (`LOCK_SH | LOCK_NB` / `FILE_SHARE_READ`), `SweepLockProbe` single-pass `OnceLock` `/proc` snapshot (removing redundant `read_link`), `InUseDetector::check_batch_scoped` (Layers 1/3/5 before OS locks, skipping `P_floor`), and batched `InUseDetector::check_paths`; deleted duplicate `write_atomic_cli_file`.
+  - [`src/audit.rs`](../src/audit.rs) & [`src/daemon.rs`](../src/daemon.rs): Enforced `0o600` Unix permissions on `audit.jsonl`, `pid_file`, `state_file`, `stop_file`, and `init` configs; added `50 MiB` `.1` audit rotation (`DEFAULT_AUDIT_ROTATE_BYTES`); added `is_filecleaner_process` guard in `daemon_stop`; lowered `STOP_POLL_SLICE` to `200 ms`; deleted duplicate `normalize_lexical`.
+  - [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) & [`.github/workflows/release.yml`](../.github/workflows/release.yml): Pinned all `uses:` steps to 40-char commit SHAs, replaced script `${{ ... }}` interpolation with `env:`, and scoped `contents: write` solely to `publish-release`.
+- **Result & Non-Regression Test**:
+  - Added regression tests across [`tests/actions_pipeline_test.rs`](../tests/actions_pipeline_test.rs), [`tests/hooks_pre_delete_test.rs`](../tests/hooks_pre_delete_test.rs), [`tests/retention_age_size_count_test.rs`](../tests/retention_age_size_count_test.rs), [`tests/in_use_detection_test.rs`](../tests/in_use_detection_test.rs), [`tests/daemon_and_cli_test.rs`](../tests/daemon_and_cli_test.rs), [`tests/governance_and_docs_test.rs`](../tests/governance_and_docs_test.rs), and unit modules.
+  - Verified in WSL2 (`/var/tmp/filecleaner-target-verify`): `cargo fmt --all -- --check` PASS, `cargo clippy --all-targets -- -D warnings` PASS (Linux + `x86_64-pc-windows-gnu` + `aarch64-apple-darwin`), `cargo test --all-targets` PASS (`112/112`: `62` unit + `50` integration across 8 suites), and `cargo llvm-cov --fail-under-lines 90` PASS (`93.09%` lines, `90.85%` regions across `8,678` lines).
+
+---
+
 ## 2. Technical Dead-Ends & Abandoned Leads (`IMP`)
 
 ### IMP-001 — C/C++ `-sys` Compression Bindings (`zstd-sys`, `liblz4-sys`, `bzip2-sys`, `zlib-ng-sys`) vs. Pure-Rust Compression Crates
@@ -151,6 +180,17 @@
   - Provides high-precision, zero-external-binary (`lsof`-free) lock detection across Linux, macOS, and Windows while remaining 100% pure Rust (`std` + `libc` on Unix). On non-Linux Unix systems, un-flocked active writers without sidecar files are caught by `min_idle_age` and the stability window rather than an immediate FD table scan.
 - **Removal Condition**:
   - Scheduled for v1.1 enhancement (`IDEA-004`) via native BSD/macOS `libproc` (`proc_pidinfo` / `PROC_PIDLISTFDS`) or `fanotify` / Restart Manager diagnostics without shelling out to external binaries.
+
+---
+
+### APP-002 — Fixed `50 MiB` Single-Generation `<audit_log>.1` JSONL Audit Rotation Threshold
+- **Target Scope**: `src/audit.rs` (`DEFAULT_AUDIT_ROTATE_BYTES`), `src/scanner.rs` (`build_internal_guard`), `src/daemon.rs` (`build_ignored_paths`).
+- **Nature of the Approximation**:
+  - `AuditLogger::open` delegates to `AuditLogger::open_with_max_bytes(path, DEFAULT_AUDIT_ROTATE_BYTES)` with a compiled-in `50 MiB` (`52,428,800` bytes) cap and single-generation backup `<audit_log>.1` (overwriting `.1` on the next `50 MiB` boundary) rather than exposing new `[audit]` configuration keys in `AuditConfig` or unbounded numbered archive chains.
+- **Justification & Impact**:
+  - Prevents long-running `filecleaner daemon` instances from exhausting disk space with unbounded JSONL growth while preserving zero breaking changes to `AuditConfig` (`v1.0.0` schema contract) and zero external logrotate crate dependencies. Guarded identically alongside the primary audit log so sweep rules never prune `<audit_log>.1`.
+- **Removal Condition**:
+  - May be parameterized via optional `[audit].max_bytes` / `max_rotated_files` schema fields in a future `v1.1` minor configuration extension if operators require multi-generation retention inside FileCleaner itself.
 
 ---
 

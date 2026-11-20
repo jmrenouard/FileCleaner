@@ -441,3 +441,60 @@ fn all_repository_markdown_files_enforce_latex_math_integrity_rules() {
         all_errors.join("\n")
     );
 }
+
+#[test]
+fn github_workflows_pin_actions_to_full_shas_and_avoid_run_interpolation() {
+    let root = manifest_dir();
+    let workflow_paths = [
+        root.join(".github/workflows/ci.yml"),
+        root.join(".github/workflows/release.yml"),
+    ];
+
+    for wf_path in &workflow_paths {
+        let raw = fs::read_to_string(wf_path).unwrap();
+        let doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(&raw).unwrap();
+        let jobs = doc["jobs"].as_mapping().expect("workflow jobs mapping");
+
+        for (job_key, job_val) in jobs {
+            let job_name = job_key.as_str().unwrap_or("<unknown>");
+            let steps = job_val["steps"].as_sequence().expect("job steps sequence");
+
+            for (idx, step) in steps.iter().enumerate() {
+                if let Some(uses_val) = step.get("uses").and_then(|v| v.as_str()) {
+                    let Some((_action_ref, sha)) = uses_val.split_once('@') else {
+                        panic!(
+                            "{} job '{job_name}' step #{idx} uses unpinned action '{uses_val}'",
+                            wf_path.display()
+                        );
+                    };
+                    assert!(
+                        sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit()),
+                        "{} job '{job_name}' step #{idx} must pin action to a 40-char hex SHA, got '{uses_val}'",
+                        wf_path.display()
+                    );
+                }
+
+                if let Some(run_body) = step.get("run").and_then(|v| v.as_str()) {
+                    assert!(
+                        !run_body.contains("${{"),
+                        "{} job '{job_name}' step #{idx} interpolates expression inside run script; pass via env: instead",
+                        wf_path.display()
+                    );
+                }
+            }
+        }
+    }
+
+    let release_doc: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&fs::read_to_string(&workflow_paths[1]).unwrap()).unwrap();
+    assert_eq!(
+        release_doc["permissions"]["contents"].as_str(),
+        Some("read"),
+        "release.yml top-level permissions must default to contents: read"
+    );
+    assert_eq!(
+        release_doc["jobs"]["publish-release"]["permissions"]["contents"].as_str(),
+        Some("write"),
+        "release.yml publish-release job must scope contents: write"
+    );
+}

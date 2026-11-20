@@ -636,3 +636,250 @@ fn audit_jsonl_log_and_examples_configs_validate_cleanly() {
         .unwrap()
         .contains("\"total_acted\": 1"));
 }
+
+fn try_create_file_symlink(target: &Path, link: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link).unwrap();
+        true
+    }
+    #[cfg(windows)]
+    {
+        match std::os::windows::fs::symlink_file(target, link) {
+            Ok(()) => true,
+            Err(err) if err.raw_os_error() == Some(1314) => false,
+            Err(err) => panic!("unexpected symlink_file error: {err}"),
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (target, link);
+        false
+    }
+}
+
+#[test]
+fn symlink_swap_toctou_rejected_by_copy_truncate_and_action_pipeline() {
+    let tmp = TempDir::new().unwrap();
+    let victim = tmp.path().join("victim_secret.txt");
+    fs::write(&victim, b"TOP_SECRET").unwrap();
+
+    let swapped = tmp.path().join("swapped.log");
+    if !try_create_file_symlink(&victim, &swapped) {
+        return;
+    }
+
+    let fixed_secs = Utc
+        .with_ymd_and_hms(2026, 11, 20, 9, 5, 0)
+        .unwrap()
+        .timestamp();
+    let target = WorkingTarget {
+        path: swapped.clone(),
+        size_bytes: 10,
+        mtime: Utc.timestamp_opt(fixed_secs, 0).unwrap(),
+        atime: None,
+    };
+
+    // 1. CopyTruncate must reject symlinks before staging or truncating.
+    let archive_dir = tmp.path().join("archive");
+    let archive_dest = archive_dir.join("swapped_20261120_090500.log");
+    let ct_err =
+        ActionExecutor::execute_copy_truncate(&target, &archive_dest, None, None).unwrap_err();
+    assert!(matches!(ct_err, FileCleanerError::Io { .. }));
+    assert_eq!(fs::read(&victim).unwrap(), b"TOP_SECRET");
+    assert!(!archive_dest.exists());
+    assert!(!archive_dir.exists());
+
+    // 2. Compress must reject symlinks when follow_symlinks is false.
+    let compress_rule = make_rule(
+        "compress-symlink-guard",
+        tmp.path().to_path_buf(),
+        vec![ActionStep::Compress],
+    );
+    let comp_err =
+        ActionExecutor::execute_pipeline(target.clone(), &compress_rule, None, false).unwrap_err();
+    assert!(matches!(comp_err, FileCleanerError::Io { .. }));
+    assert_eq!(fs::read(&victim).unwrap(), b"TOP_SECRET");
+    assert!(!tmp.path().join("swapped.log.gz").exists());
+    assert!(!has_fc_tmp_artifacts(tmp.path()));
+
+    // 3. Move (both same-FS and cross-FS), Delete, and cross-FS fallback reject symlinks.
+    let mut move_rule = make_rule(
+        "move-symlink-guard",
+        tmp.path().to_path_buf(),
+        vec![ActionStep::Move],
+    );
+    move_rule.move_to = Some(tmp.path().join("moved"));
+    assert!(matches!(
+        ActionExecutor::execute_pipeline(target.clone(), &move_rule, None, false),
+        Err(FileCleanerError::Io { .. })
+    ));
+    let cross_dest = tmp.path().join("moved/cross_swapped.log");
+    assert!(matches!(
+        ActionExecutor::move_with_cross_fs_fallback(
+            &swapped,
+            &cross_dest,
+            target.mtime,
+            None,
+            false,
+            true
+        ),
+        Err(FileCleanerError::Io { .. })
+    ));
+    assert!(!cross_dest.exists());
+
+    let delete_rule = make_rule(
+        "delete-symlink-guard",
+        tmp.path().to_path_buf(),
+        vec![ActionStep::Delete],
+    );
+    assert!(matches!(
+        ActionExecutor::execute_pipeline(target, &delete_rule, None, false),
+        Err(FileCleanerError::Io { .. })
+    ));
+    assert_eq!(fs::read(&victim).unwrap(), b"TOP_SECRET");
+    assert!(fs::symlink_metadata(&swapped)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+}
+
+#[test]
+fn multi_pass_idempotency_for_rename_by_date_and_compress() {
+    let tmp = TempDir::new().unwrap();
+    let fixed_secs = Utc
+        .with_ymd_and_hms(2026, 11, 20, 9, 5, 0)
+        .unwrap()
+        .timestamp();
+
+    // 1. RenameByDate applied twice does not produce _date_date.
+    let src = tmp.path().join("service.log");
+    let target = create_stamped_file(&src, b"idempotent-log", fixed_secs);
+    let rename_rule = make_rule(
+        "rename-idempotent",
+        tmp.path().to_path_buf(),
+        vec![ActionStep::RenameByDate],
+    );
+    let pass1 = ActionExecutor::execute_pipeline(target, &rename_rule, None, false).unwrap();
+    let stamped_path = tmp.path().join("service_20261120_090500.log");
+    assert_eq!(pass1.final_path.as_ref(), Some(&stamped_path));
+    assert!(stamped_path.exists());
+
+    let target_pass2 = WorkingTarget {
+        path: stamped_path.clone(),
+        size_bytes: 14,
+        mtime: Utc.timestamp_opt(fixed_secs + 3600, 0).unwrap(),
+        atime: None,
+    };
+    let pass2 = ActionExecutor::execute_pipeline(target_pass2, &rename_rule, None, false).unwrap();
+    assert_eq!(pass2.final_path.as_ref(), Some(&stamped_path));
+    assert_eq!(pass2.bytes_freed, 0);
+    assert!(stamped_path.exists());
+    assert!(!tmp
+        .path()
+        .join("service_20261120_090500_20261120_100500.log")
+        .exists());
+
+    // 2. Compress applied to already-compressed files (.gz, .lz4, .br, .zip, .GZ) is a clean no-op.
+    for ext in ["gz", "lz4", "br", "zip", "GZ"] {
+        let compressed = tmp.path().join(format!("already.{ext}"));
+        let compressed_target = create_stamped_file(&compressed, b"compressed-bytes", fixed_secs);
+        let mut comp_rule = make_rule(
+            "compress-idempotent",
+            tmp.path().to_path_buf(),
+            vec![ActionStep::Compress],
+        );
+        comp_rule.compression = CompressionFormat::Gzip;
+        let report =
+            ActionExecutor::execute_pipeline(compressed_target, &comp_rule, None, false).unwrap();
+        assert_eq!(report.final_path.as_ref(), Some(&compressed));
+        assert_eq!(report.bytes_freed, 0);
+        assert!(compressed.exists());
+        assert!(!tmp.path().join(format!("already.{ext}.gz")).exists());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn fc_tmp_staging_and_audit_log_enforce_0600_and_rotation() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = TempDir::new().unwrap();
+    let fixed_secs = Utc
+        .with_ymd_and_hms(2026, 11, 20, 9, 5, 0)
+        .unwrap()
+        .timestamp();
+
+    // 1. Cross-FS .fc-tmp staging file must be created with private 0o600 permissions.
+    let src = tmp.path().join("secret_dump.sql");
+    let target = create_stamped_file(&src, b"CREATE TABLE t (id INT);\n", fixed_secs);
+    fs::set_permissions(&src, fs::Permissions::from_mode(0o644)).unwrap();
+    let dest = tmp.path().join("cold/secret_dump.sql");
+
+    let mut observed_tmp_mode = None;
+    ActionExecutor::move_with_cross_fs_fallback_hook(
+        &src,
+        &dest,
+        target.mtime,
+        target.atime,
+        false,
+        true,
+        |staged_tmp| {
+            let mode = fs::metadata(staged_tmp).unwrap().permissions().mode() & 0o777;
+            observed_tmp_mode = Some(mode);
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(observed_tmp_mode, Some(0o600));
+    assert_eq!(
+        fs::metadata(&dest).unwrap().permissions().mode() & 0o777,
+        0o644
+    );
+
+    // 2. AuditLogger::open_with_max_bytes sets 0o600 and rotates to <path>.1.
+    let audit_path = tmp.path().join("audit.jsonl");
+    let logger = AuditLogger::open_with_max_bytes(&audit_path, 256).unwrap();
+    assert_eq!(
+        fs::metadata(&audit_path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+
+    for idx in 0..4 {
+        let entry = AuditEntry::new(AuditEventKind::FileDecision, format!("run-{idx}"), false)
+            .with_rule("pg-backups")
+            .with_candidate(format!("/var/backups/dump_{idx}.sql"), 4096)
+            .with_decision("acted");
+        logger.log(&entry).unwrap();
+    }
+
+    let rotated_path = PathBuf::from(format!("{}.1", audit_path.display()));
+    assert!(
+        rotated_path.exists(),
+        "audit.jsonl.1 must exist after exceeding 256 bytes"
+    );
+    assert_eq!(
+        fs::metadata(&rotated_path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_eq!(
+        fs::metadata(&audit_path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+
+    let rotated_lines = fs::read_to_string(&rotated_path).unwrap();
+    let active_lines = fs::read_to_string(&audit_path).unwrap();
+    assert!(!rotated_lines.trim().is_empty());
+    assert!(!active_lines.trim().is_empty());
+    for line in rotated_lines.lines().chain(active_lines.lines()) {
+        let _: serde_json::Value = serde_json::from_str(line).unwrap();
+    }
+
+    // Reopening an already-oversized audit log rotates immediately on open.
+    drop(logger);
+    fs::write(&audit_path, vec![b'x'; 300]).unwrap();
+    let reopened = AuditLogger::open_with_max_bytes(&audit_path, 256).unwrap();
+    assert_eq!(fs::metadata(&audit_path).unwrap().len(), 0);
+    assert_eq!(fs::metadata(&rotated_path).unwrap().len(), 300);
+    drop(reopened);
+}

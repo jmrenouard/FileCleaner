@@ -55,13 +55,13 @@ Garanties architecturales appliquées à chaque phase :
 
 Tout fichier produit par FileCleaner (archives compressées, cibles de déplacement inter-systèmes de fichiers, fichier PID, état JSON du démon, modèles de configuration) suit une séquence de staging résistante aux crashs :
 
-1. Écrire dans un fichier temporaire frère `<target>.fc-tmp.<pid>.<seq>` (ou `<target>.fc-tmp`).
+1. Écrire dans un fichier temporaire frère `<target>.fc-tmp.<pid>.<seq>` (ou `<target>.fc-tmp`) créé exclusivement (`create_new(true)`) avec permissions Unix privées `0o600`.
 2. Vider les tampons d'encodage et appeler `sync_all()` (`fsync`) sur le descripteur temporaire.
 3. Restaurer les métadonnées (`atime`, `mtime`, permissions) lorsque applicable.
 4. Basculer atomiquement `<target>.fc-tmp...` vers `<target>` via renommage OS (`rename(2)` / remplacement Windows), sans écraser une cible existante sauf autorisation explicite.
 5. Ne supprimer le fichier source **qu'après** réussite complète des étapes 1 à 4 (et vérification SHA-256 pour un déplacement inter-FS).
 
-Tout artefact interne correspondant à `*.fc-tmp` ou `*.fc-tmp.*` est inconditionnellement exclu de la phase de découverte des règles afin qu'une exécution concurrente ou interrompue ne détruise jamais un tampon en cours de rédaction.
+Tout artefact interne correspondant à `*.fc-tmp`, `*.fc-tmp.*` ou au journal archivé `<audit_log>.1` est inconditionnellement exclu de la phase de découverte des règles afin qu'une exécution concurrente ou interrompue ne détruise jamais un tampon en cours de rédaction ni l'historique d'audit. Lorsque `follow_symlinks = false`, FileCleaner ouvre les fichiers sources sans suivre les liens symboliques (`O_NOFOLLOW` et vérification `(st_dev, st_ino)` sous Unix ; `FILE_FLAG_OPEN_REPARSE_POINT` et rejet d'attribut *reparse point* sous Windows) et vérifie la continuité d'inode avant la troncature `copy_truncate`.
 
 ### 1.4 Portabilité pure-Rust et contrat de compilation croisée (9 cibles)
 
@@ -590,9 +590,9 @@ Lorsque `in_use.enabled == true`, chaque candidat $f \in \mathcal{F}$ traverse j
 | Couche | Mécanisme de sonde | Portée OS | Déclencheur de détection | Sémantique fail-closed & cas limites |
 | :--- | :--- | :--- | :--- | :--- |
 | **1** | **Marqueurs annexes et suffixes temporaires** | Tous OS | Le nom se termine par un suffixe de `sidecar_suffixes` (`.lock`, `.lck`, `.part`, `.tmp`, `.processing`) **OU** le fichier frère `<candidate_path><ext>` existe lorsque `check_sidecar_locks = true`. | Toujours actif si `in_use.enabled && check_sidecar_locks`. Évite de scinder les transferts protégés par fichier verrou. |
-| **2** | **Verrou consultatif Unix `flock`** | `#[cfg(unix)]` | Si `check_os_locks = true`, ouverture `O_RDONLY`, appel `libc::flock(fd, LOCK_EX | LOCK_NB)`. `EWOULDBLOCK`/`EAGAIN` $\rightarrow$ occupé ; sinon `LOCK_UN` immédiat et fermeture. | L'ouverture `O_RDONLY` permet à `flock` de fonctionner sous Linux/macOS (contrairement à `fcntl` `F_WRLCK`) sans altérer `mtime`. Erreur d'ouverture directe $\rightarrow$ occupé. |
-| **3** | **Scan d'inodes Linux `/proc/*/fd`** | `#[cfg(target_os = "linux")]` | Si `check_proc_fd = true`, lecture `(st_dev, st_ino)` du candidat. Parcours de `/proc/<pid>/fd/*` (hors PID courant) et comparaison par `stat` / `readlink`. | Les erreurs `EACCES`/`EPERM` sur les PID d'autres utilisateurs sont **consignées en diagnostic** (sans faux blocage global) ; toute correspondance accessible signale `ProcFdOpen { pid }`. |
-| **4** | **Mode de partage exclusif Windows** | `#[cfg(windows)]` | Si `check_os_locks = true`, ouverture via `OpenOptions` avec `share_mode(0)` et accès lecture/attributs (`FILE_READ_ATTRIBUTES` / `read(true)`). | Tout descripteur tiers avec partage incompatible renvoie `ERROR_SHARING_VIOLATION` (32) ou `ERROR_LOCK_VIOLATION` (33) $\rightarrow$ `WindowsShareViolation`. Fermeture immédiate sinon. |
+| **2** | **Verrou consultatif Unix `flock`** | `#[cfg(unix)]` | Si `check_os_locks = true`, ouverture `O_RDONLY`, appel `libc::flock(fd, LOCK_EX \| LOCK_NB)` en exécution réelle ou non exclusif `LOCK_SH \| LOCK_NB` en lecture seule (`plan`/`--dry-run`). `EWOULDBLOCK`/`EAGAIN` $\rightarrow$ occupé ; sinon `LOCK_UN` immédiat et fermeture. | L'ouverture `O_RDONLY` permet à `flock` de fonctionner sous Linux/macOS (contrairement à `fcntl` `F_WRLCK`) sans altérer `mtime`. Ignoré si les sondes moins intrusives (`sidecars`, `/proc`, `min_idle_age`) ou $P_{\text{floor}}$ s'appliquent déjà. |
+| **3** | **Scan d'inodes Linux `/proc/*/fd`** | `#[cfg(target_os = "linux")]` | Si `check_proc_fd = true`, lecture `(st_dev, st_ino)` du candidat. Parcours unique de `/proc/<pid>/fd/*` par passe via `SweepLockProbe` (hors PID courant) et comparaison par `stat`. | Les erreurs `EACCES`/`EPERM` sur les PID d'autres utilisateurs sont **consignées en diagnostic** (sans faux blocage global) ; toute correspondance accessible signale `ProcFdOpen { pid }`. |
+| **4** | **Mode de partage exclusif / lecture seule Windows** | `#[cfg(windows)]` | Si `check_os_locks = true`, ouverture via `OpenOptions` avec `share_mode(0)` en exécution réelle ou non exclusif `FILE_SHARE_READ` (`access_mode(0).share_mode(1)`) en mode lecture seule (`plan`/`--dry-run`). | Tout descripteur tiers avec partage incompatible renvoie `ERROR_SHARING_VIOLATION` (32) ou `ERROR_LOCK_VIOLATION` (33) $\rightarrow$ `WindowsShareViolation`. Fermeture immédiate sinon. |
 | **5** | **Refroidissement minimal (`min_idle_age`)** | Tous OS | Vérifie $t_{\text{now}} - \text{mtime}(f) < \Delta_{\text{idle}}$ (utilise toujours le `mtime` système quel que soit `time_basis`). | Protège les fichiers récemment modifiés ainsi que les dérives d'horloge futures ($\text{mtime} > t_{\text{now}}$). |
 | **6** | **Fenêtre de stabilité en deux points** | Tous OS | Capture $p_0 = (\text{size}_0, \text{mtime}_0)$, attend $\Delta_{\text{stab}} = \text{stability\_window}$, capture $p_1 = (\text{size}_1, \text{mtime}_1)$. Déclenche si $p_0 \neq p_1$. | **Optimisation groupée** : Capture $p_0$ sur tous les survivants des sondes 1–5, dort **une seule fois** $\Delta_{\text{stab}}$, puis capture $p_1$ en lot ($O(\Delta_{\text{stab}})$ total). |
 
@@ -757,8 +757,8 @@ Lorsque `effective_dry_run == true` (`--dry-run`, `plan`, `dry_run` global ou pa
 
 ### 8.2 Fichier PID et état JSON temps réel
 
-- **Fichier PID (`daemon.pid_file`)** : Contrôlé au démarrage ; si un PID actif existe déjà, le lancement échoue proprement avec le code de sortie `4` (`DaemonAlreadyRunning`). Un fichier PID orphelin est remplacé atomiquement via `.fc-tmp`, puis supprimé à l'arrêt gracieux.
-- **Fichier d'état JSON temps réel (`daemon.state_file`)** : Écrit atomiquement (`.fc-tmp` + `rename`) au démarrage, en début/fin de passe et à l'arrêt :
+- **Fichier PID (`daemon.pid_file`)** : Contrôlé au démarrage ; si un PID actif existe déjà, le lancement échoue proprement avec le code de sortie `4` (`DaemonAlreadyRunning`). Un fichier PID orphelin est remplacé atomiquement via `.fc-tmp` (`0o600`), puis supprimé à l'arrêt gracieux.
+- **Fichier d'état JSON temps réel (`daemon.state_file`)** : Écrit atomiquement (`.fc-tmp` `0o600` + `rename`) au démarrage, en début/fin de passe et à l'arrêt :
 
 ```json
 {
@@ -806,9 +806,10 @@ sequenceDiagram
 
 Invariants du protocole d'arrêt :
 
-1. **Double canal d'arrêt** : Gère à la fois les signaux OS (`SIGINT` / `SIGTERM` via `ctrlc`) et un **fichier d'arrêt** multiplateforme (`daemon.stop_file`, vérifié à pas de réveil $\le 250\text{ ms}$).
-2. **Jamais d'interruption en milieu de fichier** : Lors d'une demande d'arrêt pendant une passe, FileCleaner termine proprement l'action atomique sur le fichier en cours (évitant tout `.fc-tmp` ou copie inachevée), annule le reste de la file, écrit `"stopped"`, supprime `pid_file` et `stop_file`, vide les tampons d'audit et quitte avec le code `0`.
-3. **Passes bornées (`--max-sweeps <N>`)** : S'arrête de façon déterministe après $N$ passes complètes, facilitant les tests CI déterministes sans attente indéfinie.
+1. **Double canal d'arrêt** : Gère à la fois les signaux OS (`SIGINT` / `SIGTERM` via `ctrlc`) et un **fichier d'arrêt** multiplateforme (`daemon.stop_file`, écrit en mode Unix `0o600` et vérifié à pas de réveil de `200 ms`).
+2. **Vérification d'identité du PID lors de `daemon stop`** : Avant d'écrire `stop_file` ou d'envoyer `SIGTERM` sous Unix, `daemon stop` vérifie que tout PID actif lu dans `pid_file` appartient bien à un exécutable `filecleaner` (via `/proc` sous Linux, `ps` sous Unix non-Linux, ou `QueryFullProcessImageNameW` sous Windows), et échoue avec le code `4` si le PID a été recyclé vers un processus tiers.
+3. **Jamais d'interruption en milieu de fichier** : Lors d'une demande d'arrêt pendant une passe, FileCleaner termine proprement l'action atomique sur le fichier en cours (évitant tout `.fc-tmp` ou copie inachevée), annule le reste de la file, écrit `"stopped"`, supprime `pid_file` et `stop_file`, vide les tampons d'audit et quitte avec le code `0`.
+4. **Passes bornées (`--max-sweeps <N>`)** : S'arrête de façon déterministe après $N$ passes complètes, facilitant les tests CI déterministes sans attente indéfinie.
 
 ---
 
@@ -843,7 +844,7 @@ Options globales acceptées avant les sous-commandes : `-c, --config <PATH>`, `-
 
 ### 9.3 Schéma du journal d'audit JSONL structuré
 
-Chaque ligne d'audit est un objet JSON UTF-8 autonome terminé par `\n` et vidé sur disque de façon synchrone par événement :
+Chaque ligne d'audit est un objet JSON UTF-8 autonome terminé par `\n` et vidé sur disque de façon synchrone par événement. `AuditLogger` ouvre `audit.jsonl` avec permissions privées `0o600` sous Unix et effectue une rotation mono-génération vers `<audit_log>.1` (`0o600`) dès `50 MiB` (`DEFAULT_AUDIT_ROTATE_BYTES`) ; le journal principal et `<audit_log>.1` sont tous deux protégés contre le balayage des règles :
 
 | Champ | Type | Description |
 | :--- | :--- | :--- |
@@ -881,8 +882,8 @@ Variantes de `FileCleanerError` : `ConfigParse { path, reason }`, `ConfigFormat 
 | Vecteur de menace | Atténuation architecturale |
 | :--- | :--- |
 | **Injection de commande / shell** | Les hooks utilisent `Command::new(cmd).args(vec)` directement ; **aucun** appel à `sh -c` ou `cmd /C`. Les métacaractères dans les noms de fichiers restent des octets `argv` littéraux. |
-| **Traversée de liens symboliques** | `follow_symlinks = false` par défaut empêche la suppression de cibles externes ou la sortie de l'arborescence. |
-| **Boucles infinies d'auto-déplacement** | `INV-CFG-09` interdit `Move`/`Trash` à l'intérieur d'une racine récursive sauf exclusion explicite. |
-| **Corruption TOCTOU en écriture** | Matrice 6 couches (`min_idle_age` + `stability_window` en 2 points + sondes OS) + staging atomique `.fc-tmp` + vérification SHA-256 après copie. |
+| **Traversée de liens symboliques** | `follow_symlinks = false` par défaut, ouvertures sans suivi (`O_NOFOLLOW` / `FILE_FLAG_OPEN_REPARSE_POINT`) et contrôle `(dev, ino)` avant exécution empêchent les attaques TOCTOU par lien symbolique et la suppression hors arborescence. |
+| **Boucles infinies d'auto-déplacement** | `INV-CFG-09` interdit `Move`/`Trash` à l'intérieur d'une racine récursive sauf exclusion explicite, et l'idempotence `Compress`/`RenameByDate` ignore les noms déjà transformés. |
+| **Corruption TOCTOU en écriture** | Matrice 6 couches (`min_idle_age` + `stability_window` en 2 points + sondes OS non intrusives) + staging atomique `0o600` `.fc-tmp` + vérification SHA-256 après copie. |
 | **Leurre de sauvegarde vide (0 octet)** | Le seuil $B_{\min}$ de $\mathcal{F}_{\text{valid}}$ exclut les ébauches corrompues avant le calcul de $P_{\text{floor}}$ et $t_{\max}$. |
-| **Blocage infini de hook** | Expiration stricte `hook.timeout` appliquée par `child.kill()` + `child.wait()`. |
+| **Blocage infini et saturation de hook** | Expiration stricte `hook.timeout` appliquée par `SIGKILL` sur le groupe de processus Unix + `child.kill()`/`wait()`, sortie standard `Stdio::null()`, stderr plafonné à `64 KiB` et vidange bornée par `mpsc`. |

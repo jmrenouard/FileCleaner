@@ -8,12 +8,14 @@ use crate::hooks::{
     evaluate_hook, format_action_summary, HookCandidate, HookFailureDisposition, HookRunner,
     HookVerdict, ProcessHookRunner,
 };
-use crate::in_use::{InUseBatchResult, InUseDetector, LockProbe, OsLockProbe};
+use crate::in_use::{InUseBatchResult, InUseDetector, LockProbe, SweepLockProbe};
 use crate::policy::{DecisionKind, RetentionEngine, RuleOutcome, SweepPlan};
-use crate::scanner::{system_time_to_utc, Clock, ScanReport, Scanner, SystemClock};
+use crate::scanner::{
+    system_time_to_utc, Clock, CompiledRuleMatchers, ScanReport, Scanner, SystemClock,
+};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -157,9 +159,10 @@ impl SweepReport {
 pub struct SweepEngine;
 
 impl SweepEngine {
-    /// Runs [`SweepEngine::run_config`] using production OS clock, lock probes, and process hooks.
+    /// Runs [`SweepEngine::run_config`] using production OS clock, single-pass lock probes, and process hooks.
     pub fn run_live(config: &Config, opts: &RunOptions) -> Result<SweepReport> {
-        Self::run_config(config, opts, &SystemClock, &OsLockProbe, &ProcessHookRunner)
+        let lock_probe = SweepLockProbe::default();
+        Self::run_config(config, opts, &SystemClock, &lock_probe, &ProcessHookRunner)
     }
 
     /// Executes the strict 6-phase pipeline (`Scan -> InUseProbe -> BackupGuard ->
@@ -172,7 +175,19 @@ impl SweepEngine {
         hook_runner: &dyn HookRunner,
     ) -> Result<SweepReport> {
         config.validate()?;
+        let compiled = Scanner::compile_config(config)?;
+        Self::run_config_precompiled(config, &compiled, opts, clock, lock_probe, hook_runner)
+    }
 
+    /// Executes the strict 6-phase pipeline using precompiled rule globs and regex matchers.
+    pub(crate) fn run_config_precompiled(
+        config: &Config,
+        compiled: &HashMap<String, CompiledRuleMatchers>,
+        opts: &RunOptions,
+        clock: &dyn Clock,
+        lock_probe: &dyn LockProbe,
+        hook_runner: &dyn HookRunner,
+    ) -> Result<SweepReport> {
         let selected_rules = select_rules(&config.rules, &opts.rule_filter)?;
         let global_dry_run = config.dry_run || opts.dry_run;
         let run_id = next_run_id();
@@ -243,6 +258,7 @@ impl SweepEngine {
             let rule_report = execute_single_rule(
                 config,
                 rule,
+                compiled.get(&rule.name),
                 rule_dry_run,
                 effective_audit_path,
                 &run_id,
@@ -336,6 +352,7 @@ pub fn compute_exit_code(
 fn execute_single_rule(
     config: &Config,
     rule: &RuleConfig,
+    compiled: Option<&CompiledRuleMatchers>,
     rule_dry_run: bool,
     effective_audit_path: Option<&std::path::Path>,
     run_id: &str,
@@ -348,44 +365,45 @@ fn execute_single_rule(
     let rule_timer = Instant::now();
 
     // Phase 1: Scan directory, apply filter algebra, and resolve timestamps fail-closed.
-    let scan = match Scanner::scan_rule(rule, effective_audit_path, &config.daemon) {
-        Ok(report) => report,
-        Err(err) => {
-            let err_msg = err.to_string();
-            logger.log(
-                &AuditEntry::new(AuditEventKind::Error, run_id, rule_dry_run)
-                    .with_rule(&rule.name)
-                    .with_decision("error")
-                    .with_duration_ms(elapsed_millis(rule_timer))
-                    .with_error(&err_msg),
-            )?;
-            let row = RuleSummaryRow {
-                rule: rule.name.clone(),
-                outcome: "aborted".to_string(),
-                evaluated: 0,
-                acted: 0,
-                skipped_in_use: 0,
-                skipped_hook: 0,
-                kept_floor: 0,
-                bytes_freed: 0,
-                dry_run: rule_dry_run,
-                error: Some(err_msg.clone()),
-            };
-            return Ok(RuleExecutionReport {
-                rule_name: rule.name.clone(),
-                enabled: true,
-                dry_run: rule_dry_run,
-                plan: empty_sweep_plan(rule, RuleOutcome::Ok, None),
-                summary: row,
-                acted_files: 0,
-                skipped_hook: 0,
-                hook_warnings: 0,
-                errors: vec![err_msg],
-                aborted_by_hook: false,
-                interrupted: false,
-            });
-        }
-    };
+    let scan =
+        match Scanner::scan_rule_compiled(rule, compiled, effective_audit_path, &config.daemon) {
+            Ok(report) => report,
+            Err(err) => {
+                let err_msg = err.to_string();
+                logger.log(
+                    &AuditEntry::new(AuditEventKind::Error, run_id, rule_dry_run)
+                        .with_rule(&rule.name)
+                        .with_decision("error")
+                        .with_duration_ms(elapsed_millis(rule_timer))
+                        .with_error(&err_msg),
+                )?;
+                let row = RuleSummaryRow {
+                    rule: rule.name.clone(),
+                    outcome: "aborted".to_string(),
+                    evaluated: 0,
+                    acted: 0,
+                    skipped_in_use: 0,
+                    skipped_hook: 0,
+                    kept_floor: 0,
+                    bytes_freed: 0,
+                    dry_run: rule_dry_run,
+                    error: Some(err_msg.clone()),
+                };
+                return Ok(RuleExecutionReport {
+                    rule_name: rule.name.clone(),
+                    enabled: true,
+                    dry_run: rule_dry_run,
+                    plan: empty_sweep_plan(rule, RuleOutcome::Ok, None),
+                    summary: row,
+                    acted_files: 0,
+                    skipped_hook: 0,
+                    hook_warnings: 0,
+                    errors: vec![err_msg],
+                    aborted_by_hook: false,
+                    interrupted: false,
+                });
+            }
+        };
 
     for skipped_path in &scan.skipped_timestamp_parse {
         logger.log(
@@ -397,8 +415,16 @@ fn execute_single_rule(
         )?;
     }
 
-    // Phase 2: 6-layer multi-probe active-writer detection.
-    let in_use_batch = InUseDetector::check_batch(&scan.files, &rule.in_use, clock, lock_probe);
+    // Phase 2: 6-layer multi-probe active-writer detection (skip OS locks on P_floor, read-only in dry-run).
+    let floor_paths = crate::policy::compute_protected_floor_paths(rule, &scan.files);
+    let in_use_batch = InUseDetector::check_batch_scoped(
+        &scan.files,
+        &rule.in_use,
+        clock,
+        lock_probe,
+        &floor_paths,
+        rule_dry_run,
+    );
 
     // Phases 3 & 4: Backup safety guards and deterministic retention plan.
     let plan = RetentionEngine::plan(rule, &scan, &in_use_batch, clock);
@@ -564,6 +590,29 @@ fn execute_single_rule(
         }
 
         // Phase 6: Execute ordered lifecycle action pipeline (or dry-run simulation).
+        // Re-verify candidate is still non-symlink immediately prior to mutation when follow_symlinks=false.
+        if !rule_dry_run && !rule.follow_symlinks {
+            if let Ok(sym) = fs::symlink_metadata(&candidate.path) {
+                if sym.file_type().is_symlink() {
+                    let err_str = format!(
+                        "refusing symlink target '{}' when follow_symlinks=false",
+                        candidate.path.display()
+                    );
+                    errors.push(err_str.clone());
+                    logger.log(
+                        &AuditEntry::new(AuditEventKind::Error, run_id, rule_dry_run)
+                            .with_rule(&rule.name)
+                            .with_candidate(&candidate.path, candidate.size_bytes)
+                            .with_resolved_ts(candidate.resolved_ts)
+                            .with_decision("error")
+                            .with_duration_ms(elapsed_millis(file_timer))
+                            .with_error(&err_str),
+                    )?;
+                    continue;
+                }
+            }
+        }
+
         let atime = fs::metadata(&candidate.path)
             .ok()
             .and_then(|meta| meta.accessed().ok())
@@ -863,7 +912,7 @@ mod tests {
         ActionStep, AuditConfig, BackupGuardConfig, CombineMode, CompressionFormat, DaemonConfig,
         EvictionOrder, HookConfig, HookFailurePolicy, InUseConfig, TimeBasis,
     };
-    use crate::in_use::{InUseReason, ProcFdProbeOutcome};
+    use crate::in_use::{InUseReason, OsLockProbe, ProcFdProbeOutcome};
     use crate::scanner::FixedClock;
     use chrono::TimeZone;
     use std::collections::{BTreeMap, HashMap};
@@ -1325,5 +1374,85 @@ mod tests {
         let audit_log = fs::read_to_string(&audit_path).unwrap();
         assert!(audit_log.contains("skip_ts_parse"));
         assert!(audit_log.contains("warn_and_continue"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn engine_rejects_post_scan_symlink_swap_before_execute_pipeline() {
+        struct SymlinkSwapHook {
+            victim: PathBuf,
+        }
+
+        impl HookRunner for SymlinkSwapHook {
+            fn run(
+                &self,
+                candidate: &HookCandidate,
+                _hook: &HookConfig,
+                _dry_run: bool,
+            ) -> Result<HookVerdict> {
+                fs::remove_file(&candidate.path).unwrap();
+                std::os::unix::fs::symlink(&self.victim, &candidate.path).unwrap();
+                Ok(HookVerdict::Proceed)
+            }
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let watch_dir = tmp.path().join("watch");
+        fs::create_dir_all(&watch_dir).unwrap();
+        let victim = tmp.path().join("victim_secret.txt");
+        fs::write(&victim, b"TOP_SECRET").unwrap();
+
+        let target = watch_dir.join("evict.log");
+        fs::write(&target, b"old-log").unwrap();
+
+        let now = Utc.with_ymd_and_hms(2026, 11, 20, 12, 0, 0).unwrap();
+        set_mtime_unix(&target, now.timestamp() - 3600);
+
+        let mut rule = base_rule("swap-guard", watch_dir);
+        rule.max_files = Some(0);
+        rule.pre_delete_hook = Some(HookConfig {
+            command: "/bin/true".to_string(),
+            args: vec![],
+            timeout: Duration::from_secs(5),
+            on_failure: HookFailurePolicy::AbortFile,
+            skip_exit_code: None,
+            run_in_dry_run: false,
+            working_dir: None,
+            env: BTreeMap::new(),
+        });
+
+        let audit_path = tmp.path().join("swap_audit.jsonl");
+        let cfg = Config {
+            audit: AuditConfig {
+                log_path: Some(audit_path.clone()),
+                jsonl: true,
+            },
+            rules: vec![rule],
+            ..Config::default()
+        };
+
+        let report = SweepEngine::run_config(
+            &cfg,
+            &RunOptions::default(),
+            &FixedClock(now),
+            &OsLockProbe,
+            &SymlinkSwapHook {
+                victim: victim.clone(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(report.exit_code, EXIT_OPERATIONAL_ERROR);
+        assert!(report.has_operational_error);
+        assert_eq!(report.rule_reports[0].acted_files, 0);
+        assert!(report.rule_reports[0].errors[0].contains("refusing symlink target"));
+        assert_eq!(fs::read(&victim).unwrap(), b"TOP_SECRET");
+        assert!(fs::symlink_metadata(&target)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(fs::read_to_string(&audit_path)
+            .unwrap()
+            .contains("\"error\""));
     }
 }
