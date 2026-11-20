@@ -22,7 +22,7 @@ flate2 = "1"
 lz4_flex = "0.11"
 brotli = "7"
 zip = { version = "2", default-features = false, features = ["deflate"] }
-sha2 = "0.10"
+sha2 = "0.11"
 notify = "8"
 ctrlc = { version = "3", features = ["termination"] }
 thiserror = "2"
