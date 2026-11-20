@@ -17,6 +17,25 @@
 
 ## 2. Completed Actions (`COMPLETED`)
 
+### ACT-003 — Implement Lifecycle Action Pipeline, Pure-Rust Compression, Pre-Delete Hooks, and JSONL Audit Log (`Issue #8`)
+- **Timestamp**: `2026-11-20T10:03:39Z`
+- **Issue / Branch**: `#8` (`feat/issue-8-actions-compression-hooks`)
+- **Request**: Implement the Wave 2 ordered lifecycle action pipeline (`src/actions.rs`), direct-argv pre-delete hook runner (`src/hooks.rs`), structured JSONL audit logging (`src/audit.rs`), validated configuration/hook examples (`examples/`), and integration test suites (`tests/actions_pipeline_test.rs`, `tests/hooks_pre_delete_test.rs`), merged cleanly with Wave 2 Core (`Issue #7`).
+- **Changes**:
+  - [`src/hooks.rs`](../src/hooks.rs): Added `HookCandidate`, `HookVerdict`, `HookFailureDisposition`, `HookRunner`, `ProcessHookRunner`, `evaluate_hook`, `expand_hook_args`, `format_action_summary`, and `hook_error_disposition` with direct `Command::new` argv invocation (zero shell), `FILECLEANER_*` env vars, concurrent stdout/stderr draining, `try_wait()` timeout + `kill()`/`wait()` reaping, `ETXTBSY` retry, `skip_exit_code = 42` veto, and `HookFailurePolicy::{AbortFile, AbortRule, WarnAndContinue}`.
+  - [`src/actions.rs`](../src/actions.rs): Added `WorkingTarget`, `ActionReport`, `ActionExecutor::execute_pipeline`, `move_with_cross_fs_fallback`, `move_with_cross_fs_fallback_hook`, `copy_and_verify_sha256`, `execute_copy_truncate`, `compute_file_sha256`, and `verify_file_sha256` covering `RenameByDate`, pure-Rust `Compress` (`Gzip`, `Lz4`, `Brotli`, `Zip`), `Move` with `.fc-tmp.<pid>.<seq>` + `sync_all()` + SHA-256 cross-FS verification, `CopyTruncate`, collision-safe `Trash`, `Delete`, and zero-mutation `DryRun` parity.
+  - [`src/audit.rs`](../src/audit.rs): Added `AuditEventKind`, `AuditEntry`, synchronous `AuditLogger`, `RuleSummaryRow`, `SweepSummary`, and `format_bytes_human`.
+  - [`src/lib.rs`](../src/lib.rs): Merged Wave 2 Core & Actions exports cleanly across all 8 modules (`actions`, `audit`, `config`, `error`, `hooks`, `in_use`, `policy`, `scanner`).
+  - Examples & Hooks: `examples/postgres-backups.toml`, `examples/app-logs-rotation.toml`, `examples/incoming-spool.yaml`, `examples/hooks/archive_to_s3_mock.sh`, `examples/hooks/verify_checksum_before_delete.sh`.
+  - Integration Tests: [`tests/actions_pipeline_test.rs`](../tests/actions_pipeline_test.rs) and [`tests/hooks_pre_delete_test.rs`](../tests/hooks_pre_delete_test.rs).
+  - Governance: Updated [`docs/ACTION_LOGBOOK.md`](ACTION_LOGBOOK.md).
+- **Result** (Combined Wave 2 `main` + Issue `#8`):
+  - `cargo fmt --all -- --check`: PASS (`0` diffs).
+  - `cargo clippy --all-targets -- -D warnings`: PASS (`0` warnings).
+  - `cargo test`: PASS (`44` unit tests + `28` integration tests across 6 suites = `72 passed; 0 failed`).
+  - `cargo llvm-cov --all-targets --workspace --summary-only --fail-under-lines 90`: PASS (`91.74%` line coverage across `4,711` lines: `actions.rs` `88.69%`, `audit.rs` `95.16%`, `config.rs` `94.61%`, `error.rs` `100.00%`, `hooks.rs` `93.93%`, `in_use.rs` `87.23%`, `main.rs` `100.00%`, `policy.rs` `92.38%`, `scanner.rs` `90.79%`).
+  - Independent Audit: Approved by `@verifier` (`38/38` standalone, `92.82%` standalone) and verified post-merge (`72/72`, `91.74%`).
+
 ### ACT-002 — Implement Directory Scanner, Multi-Probe In-Use Detector, and Backup-Guarded Retention Engine (`Issue #7`)
 - **Timestamp**: `2026-11-20T09:57:09Z`
 - **Issue / Branch**: `#7` (`feat/issue-7-retention-safety-inuse`)
