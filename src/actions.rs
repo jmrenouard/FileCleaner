@@ -911,14 +911,14 @@ fn to_zip_datetime(dt: DateTime<Utc>) -> Option<zip::DateTime> {
 }
 
 fn is_cross_device_error(err: &io::Error) -> bool {
-    if err.kind() == io::ErrorKind::CrossesDevices {
-        return true;
-    }
     #[cfg(unix)]
-    if err.raw_os_error() == Some(libc::EXDEV) {
-        return true;
+    {
+        err.kind() == io::ErrorKind::CrossesDevices || err.raw_os_error() == Some(libc::EXDEV)
     }
-    false
+    #[cfg(not(unix))]
+    {
+        err.kind() == io::ErrorKind::CrossesDevices
+    }
 }
 
 fn to_hex_lower(bytes: &[u8]) -> String {

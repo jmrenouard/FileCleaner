@@ -696,6 +696,10 @@ pub fn is_pid_alive(pid: u32) -> bool {
             if is_linux_zombie(pid) {
                 return false;
             }
+            #[cfg(all(unix, not(target_os = "linux")))]
+            if is_non_linux_unix_zombie(pid) {
+                return false;
+            }
             return true;
         }
         let err = std::io::Error::last_os_error();
@@ -704,17 +708,7 @@ pub fn is_pid_alive(pid: u32) -> bool {
 
     #[cfg(windows)]
     {
-        use std::process::Command;
-        let output = Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
-            .output();
-        match output {
-            Ok(out) if out.status.success() => {
-                let stdout = String::from_utf8_lossy(&out.stdout);
-                stdout.contains(&format!("\"{pid}\""))
-            }
-            _ => false,
-        }
+        is_windows_pid_alive(pid)
     }
 
     #[cfg(not(any(unix, windows)))]
@@ -734,6 +728,60 @@ fn is_linux_zombie(pid: u32) -> bool {
         return false;
     };
     stat[rparen + 1..].trim_start().starts_with('Z')
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn is_non_linux_unix_zombie(pid: u32) -> bool {
+    let Ok(output) = std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+    else {
+        return false;
+    };
+    if !output.status.success() {
+        return true;
+    }
+    let trimmed = String::from_utf8_lossy(&output.stdout);
+    let stat = trimmed.trim();
+    stat.is_empty() || stat.starts_with('Z')
+}
+
+#[cfg(windows)]
+fn is_windows_pid_alive(pid: u32) -> bool {
+    use std::ffi::c_void;
+
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    const STILL_ACTIVE: u32 = 259;
+    const ERROR_ACCESS_DENIED: i32 = 5;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn OpenProcess(
+            dw_desired_access: u32,
+            b_inherit_handle: i32,
+            dw_process_id: u32,
+        ) -> *mut c_void;
+        fn GetExitCodeProcess(h_process: *mut c_void, lp_exit_code: *mut u32) -> i32;
+        fn CloseHandle(h_object: *mut c_void) -> i32;
+    }
+
+    // SAFETY: `OpenProcess` is invoked with `PROCESS_QUERY_LIMITED_INFORMATION` and returns either
+    // null or an owned process handle closed unconditionally below.
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        return std::io::Error::last_os_error().raw_os_error() == Some(ERROR_ACCESS_DENIED);
+    }
+
+    let mut exit_code: u32 = 0;
+    // SAFETY: `handle` is a non-null process handle from `OpenProcess` and `exit_code` points to
+    // valid stack storage; `CloseHandle` releases `handle` immediately afterward.
+    let ok = unsafe { GetExitCodeProcess(handle, &mut exit_code) };
+    // SAFETY: `handle` is non-null and not closed elsewhere.
+    unsafe {
+        let _ = CloseHandle(handle);
+    }
+
+    ok != 0 && exit_code == STILL_ACTIVE
 }
 
 #[cfg(unix)]

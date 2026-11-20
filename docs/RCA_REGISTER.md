@@ -49,6 +49,25 @@
 
 ---
 
+### RCA-003 — `windows-latest` `clippy::needless_bool` and `macos-latest` Zombie `is_pid_alive` Timeout (`PR #15` / Run `44714006240`)
+- **Date / Linked Action**: `2026-11-20` (`ACT-005` / Issue `#14` / PR `#15`)
+- **Observed Symptom**:
+  - GitHub Actions CI Run `44714006240` passed all three `ubuntu-latest` jobs (`fmt-and-clippy`, `coverage-gate >= 90%`, `cross-os-test`), passed `57/57` unit tests and `7/8` integration suites on `macos-latest`, and surfaced two platform-specific defects:
+    1. `windows-latest` (`cargo clippy --all-targets -- -D warnings`): failed on `src/actions.rs:914` with `clippy::needless_bool` (`this if guard returns a bool literal and is followed by another`).
+    2. `macos-latest` (`tests/daemon_and_cli_test.rs:643`): `cli_daemon_subprocess_lifecycle_notify_status_duplicate_pid_stop_and_templates` timed out in `filecleaner daemon stop --timeout 10s` (`timed out after 10000ms waiting for daemon PID ... to stop`).
+- **Root Cause Analysis (5 Whys)**:
+  1. *Why did `src/actions.rs:914` trigger `clippy::needless_bool` on Windows?* Because `#[cfg(unix)]` compiled out the `libc::EXDEV` branch on Windows, collapsing `is_cross_device_error` to `if err.kind() == io::ErrorKind::CrossesDevices { return true; } false`.
+  2. *Why did `daemon stop` time out on macOS?* Because the test spawns `filecleaner daemon run` as a child process and holds its un-waited `std::process::Child` handle until after `daemon stop` returns; when the daemon exits, it remains a zombie (`Z`) until reaped. On Linux `is_linux_zombie` checks `/proc/<pid>/stat`, whereas on macOS `kill(pid, 0)` continued returning `0` on the zombie process.
+  3. *Why did `is_pid_alive` on Windows use `tasklist.exe`?* Because no native Win32 handle check was wired, risking unnecessary process-spawn overhead and differing exit semantics for un-waited `Child` handles (`STILL_ACTIVE`).
+- **Applied Change / Fix**:
+  - [`src/actions.rs`](../src/actions.rs): Rewrote `is_cross_device_error` with clean `#[cfg(unix)]` and `#[cfg(not(unix))]` boolean expressions.
+  - [`src/daemon.rs`](../src/daemon.rs): Added `is_non_linux_unix_zombie` (`ps -o stat= -p <pid>`) under `#[cfg(all(unix, not(target_os = "linux")))]` so macOS/BSD zombies report `false`, and replaced `tasklist.exe` under `#[cfg(windows)]` with direct `kernel32` FFI (`OpenProcess` + `GetExitCodeProcess` checking `STILL_ACTIVE == 259` + `CloseHandle`).
+  - Local Cross-Target Verification: Added `x86_64-pc-windows-gnu` and `aarch64-apple-darwin` targets in WSL2 to run `cargo clippy --lib --bins --tests --target <triple> -- -D warnings` locally prior to pushing.
+- **Result & Non-Regression Test**:
+  - Cross-target Clippy (`x86_64-pc-windows-gnu`, `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu`) passed with zero warnings, alongside full WSL2 `cargo fmt`, `cargo test`, and `cargo llvm-cov --fail-under-lines 90`.
+
+---
+
 ## 2. Technical Dead-Ends & Abandoned Leads (`IMP`)
 
 ### IMP-001 — C/C++ `-sys` Compression Bindings (`zstd-sys`, `liblz4-sys`, `bzip2-sys`, `zlib-ng-sys`) vs. Pure-Rust Compression Crates

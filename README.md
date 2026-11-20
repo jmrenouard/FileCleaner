@@ -12,7 +12,7 @@
 [![CI](https://github.com/jmrenouard/FileCleaner/actions/workflows/ci.yml/badge.svg)](https://github.com/jmrenouard/FileCleaner/actions/workflows/ci.yml)
 [![Pure Rust](https://img.shields.io/badge/Rust-2021_Pure--Rust-10b981?style=flat-square&logo=rust)](Cargo.toml)
 [![Tests](https://img.shields.io/badge/Tests-95_Passed-3b82f6?style=flat-square)](docs/ACTION_LOGBOOK.md)
-[![Coverage](https://img.shields.io/badge/Coverage-92.83%25_llvm--cov-10b981?style=flat-square)](docs/ACTION_LOGBOOK.md)
+[![Coverage](https://img.shields.io/badge/Coverage-92.85%25_llvm--cov-10b981?style=flat-square)](docs/ACTION_LOGBOOK.md)
 [![Clippy](https://img.shields.io/badge/Clippy-0_Warnings-10b981?style=flat-square)](docs/ACTION_LOGBOOK.md)
 [![Targets](https://img.shields.io/badge/Targets-9_Cross--Platform_Binaries-0284c7?style=flat-square)](#9-target-cross-compilation-matrix)
 [![License](https://img.shields.io/badge/License-Apache_2.0-f59e0b?style=flat-square)](LICENSE)
@@ -287,7 +287,7 @@ FileCleaner depends exclusively on pure-Rust crates (`miniz_oxide`, `lz4_flex`, 
 
 ## Contributing & Engineering Governance
 
-All FileCleaner changes follow strict engineering traceability and verified quality gates (Issue `#14` / PR `#15` baseline: `cargo fmt --all -- --check` clean, `cargo clippy --all-targets -- -D warnings` **`0` warnings**, **`95` tests passed** [`57` unit + `38` integration across `8` suites], and **`92.83%` line coverage** across `8,088` lines via `cargo llvm-cov --fail-under-lines 90`):
+All FileCleaner changes follow strict engineering traceability and verified quality gates (Issue `#14` / PR `#15` baseline: `cargo fmt --all -- --check` clean, `cargo clippy --all-targets -- -D warnings` **`0` warnings**, **`95` tests passed** [`57` unit + `38` integration across `8` suites], and **`92.85%` line coverage** across `8,082` lines via `cargo llvm-cov --fail-under-lines 90`):
 
 - [**`docs/ACTION_LOGBOOK.md`**](docs/ACTION_LOGBOOK.md) — Chronological engineering action logbook with verified test & coverage evidence.
 - [**`docs/RCA_REGISTER.md`**](docs/RCA_REGISTER.md) — Root cause analyses (`RCA`), rejected technical dead-ends (`IMP`), platform approximations (`APP`), and `v1.1` roadmap (`IDEA`).
