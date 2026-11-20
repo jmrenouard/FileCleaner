@@ -1,0 +1,327 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1260 420" width="1260" height="420" fill="none" role="img" aria-label="FileCleaner Hero Banner">
+  <defs>
+    <!-- Banner Background Obsidian-to-Slate Surface -->
+    <linearGradient id="hbBg" x1="0" y1="0" x2="1260" y2="420" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#08090a"/>
+      <stop offset="42%" stop-color="#0c121b"/>
+      <stop offset="78%" stop-color="#0a1622"/>
+      <stop offset="100%" stop-color="#071514"/>
+    </linearGradient>
+
+    <!-- Ambient Architectural Glows -->
+    <radialGradient id="hbGlowLeft" cx="145" cy="138" r="245" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0ea5e9" stop-opacity="0.16"/>
+      <stop offset="55%" stop-color="#10b981" stop-opacity="0.06"/>
+      <stop offset="100%" stop-color="#08090a" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="hbGlowRight" cx="980" cy="105" r="320" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#10b981" stop-opacity="0.12"/>
+      <stop offset="55%" stop-color="#0ea5e9" stop-opacity="0.05"/>
+      <stop offset="100%" stop-color="#08090a" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="hbGlowAmber" cx="481" cy="318" r="210" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#f59e0b" stop-opacity="0.09"/>
+      <stop offset="100%" stop-color="#08090a" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Outer Specular Border -->
+    <linearGradient id="hbBorder" x1="0" y1="0" x2="1260" y2="420" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.22"/>
+      <stop offset="50%" stop-color="#38bdf8" stop-opacity="0.14"/>
+      <stop offset="100%" stop-color="#10b981" stop-opacity="0.22"/>
+    </linearGradient>
+
+    <!-- Title Gradient Accent -->
+    <linearGradient id="hbTitleAccent" x1="370" y1="85" x2="620" y2="135" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#34d399"/>
+      <stop offset="55%" stop-color="#22d3ee"/>
+      <stop offset="100%" stop-color="#38bdf8"/>
+    </linearGradient>
+
+    <!-- Divider Accent -->
+    <linearGradient id="hbDivider" x1="272" y1="186" x2="1206" y2="186" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#10b981" stop-opacity="0.75"/>
+      <stop offset="45%" stop-color="#0ea5e9" stop-opacity="0.55"/>
+      <stop offset="75%" stop-color="#f59e0b" stop-opacity="0.40"/>
+      <stop offset="100%" stop-color="#1e293b" stop-opacity="0"/>
+    </linearGradient>
+
+    <!-- Subtle Technical Grid Pattern -->
+    <pattern id="hbGrid" width="42" height="42" patternUnits="userSpaceOnUse">
+      <path d="M 42 0 L 0 0 0 42" fill="none" stroke="#ffffff" stroke-opacity="0.028" stroke-width="1"/>
+    </pattern>
+
+    <!-- Clip Rounded Banner Bounds -->
+    <clipPath id="hbClip">
+      <rect x="2" y="2" width="1256" height="416" rx="22"/>
+    </clipPath>
+
+    <!-- Embedded Logo Gradients (prefixed to avoid ID collisions) -->
+    <linearGradient id="hbLogoBg" x1="4" y1="4" x2="116" y2="116" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#13161b"/>
+      <stop offset="100%" stop-color="#08090a"/>
+    </linearGradient>
+    <radialGradient id="hbLogoGlow" cx="60" cy="56" r="46" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0ea5e9" stop-opacity="0.14"/>
+      <stop offset="55%" stop-color="#10b981" stop-opacity="0.07"/>
+      <stop offset="100%" stop-color="#08090a" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="hbLogoSpec" x1="12" y1="4" x2="108" y2="116" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.28"/>
+      <stop offset="45%" stop-color="#ffffff" stop-opacity="0.10"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0.16"/>
+    </linearGradient>
+    <linearGradient id="hbLogoSweep" x1="27" y1="80" x2="96" y2="78" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#10b981" stop-opacity="0.78"/>
+      <stop offset="28%" stop-color="#34d399"/>
+      <stop offset="62%" stop-color="#06b6d4"/>
+      <stop offset="100%" stop-color="#0ea5e9"/>
+    </linearGradient>
+    <linearGradient id="hbLogoShield" x1="42" y1="38" x2="78" y2="83" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#fde047"/>
+      <stop offset="45%" stop-color="#f59e0b"/>
+      <stop offset="100%" stop-color="#d97706"/>
+    </linearGradient>
+    <linearGradient id="hbLogoVault" x1="60" y1="43" x2="60" y2="77" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#15110a"/>
+      <stop offset="100%" stop-color="#08090c"/>
+    </linearGradient>
+    <linearGradient id="hbLogoLock" x1="52" y1="55" x2="68" y2="70" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#fef08a"/>
+      <stop offset="50%" stop-color="#fbbf24"/>
+      <stop offset="100%" stop-color="#f59e0b"/>
+    </linearGradient>
+
+    <!-- Pipeline Card Surface Gradients -->
+    <linearGradient id="hbCardBg" x1="0" y1="0" x2="0" y2="114" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#101826" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="#090e17" stop-opacity="0.95"/>
+    </linearGradient>
+    <linearGradient id="hbCardAmber" x1="0" y1="0" x2="0" y2="114" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1b150c" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="#0d0b08" stop-opacity="0.95"/>
+    </linearGradient>
+    <linearGradient id="hbCardEmerald" x1="0" y1="0" x2="0" y2="114" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0a1c19" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="#07100f" stop-opacity="0.95"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 1. BACKGROUND CANVAS & AMBIENT LIGHTING -->
+  <g clip-path="url(#hbClip)">
+    <rect x="2" y="2" width="1256" height="416" fill="url(#hbBg)"/>
+    <rect x="2" y="2" width="1256" height="416" fill="url(#hbGrid)"/>
+    <rect x="2" y="2" width="1256" height="416" fill="url(#hbGlowLeft)"/>
+    <rect x="2" y="2" width="1256" height="416" fill="url(#hbGlowRight)"/>
+    <rect x="2" y="2" width="1256" height="416" fill="url(#hbGlowAmber)"/>
+
+    <!-- Subtle Orbital Telemetry Rings Around Left Emblem -->
+    <circle cx="143" cy="135" r="102" stroke="#38bdf8" stroke-opacity="0.14" stroke-width="1" stroke-dasharray="6 6"/>
+    <circle cx="143" cy="135" r="126" stroke="#10b981" stroke-opacity="0.09" stroke-width="1" stroke-dasharray="3 8"/>
+  </g>
+  <rect x="2" y="2" width="1256" height="416" rx="22" stroke="url(#hbBorder)" stroke-width="1.5"/>
+  <rect x="6" y="6" width="1248" height="408" rx="19" stroke="#ffffff" stroke-opacity="0.04" stroke-width="1"/>
+
+  <!-- 2. EMBEDDED FILECLEANER EMBLEM ON LEFT (174x174 at x=56, y=48) -->
+  <g transform="translate(56, 48) scale(1.45)">
+    <rect x="4" y="4" width="112" height="112" rx="26" fill="url(#hbLogoBg)"/>
+    <rect x="4" y="4" width="112" height="112" rx="26" fill="url(#hbLogoGlow)"/>
+    <rect x="4" y="4" width="112" height="112" rx="26" stroke="url(#hbLogoSpec)" stroke-width="1.5"/>
+    <rect x="7" y="7" width="106" height="106" rx="23" stroke="#ffffff" stroke-opacity="0.06" stroke-width="1"/>
+
+    <line x1="60" y1="12.4" x2="60" y2="18.2" stroke="#10b981" stroke-width="2.4" stroke-linecap="round"/>
+    <line x1="97.8" y1="81.8" x2="102.2" y2="84.4" stroke="#0ea5e9" stroke-width="2.4" stroke-linecap="round"/>
+    <line x1="22.2" y1="81.8" x2="17.8" y2="84.4" stroke="#34d399" stroke-width="2.4" stroke-linecap="round"/>
+
+    <g stroke="#64748b" stroke-opacity="0.68" stroke-width="1.5" stroke-linecap="round">
+      <line x1="81.6" y1="22.6" x2="83.3" y2="19.7"/>
+      <line x1="97.4" y1="38.4" x2="100.3" y2="36.7"/>
+      <line x1="101.8" y1="60" x2="105.8" y2="60"/>
+      <line x1="81.6" y1="97.4" x2="83.3" y2="100.3"/>
+      <line x1="60" y1="101.8" x2="60" y2="105.8"/>
+      <line x1="38.4" y1="97.4" x2="36.7" y2="100.3"/>
+      <line x1="18.2" y1="60" x2="14.2" y2="60"/>
+      <line x1="22.6" y1="38.4" x2="19.7" y2="36.7"/>
+      <line x1="38.4" y1="22.6" x2="36.7" y2="19.7"/>
+    </g>
+
+    <circle cx="60" cy="60" r="35.6" stroke="#1e293b" stroke-width="2.2" stroke-opacity="0.72"/>
+    <path d="M 84.28 86.03 A 35.6 35.6 0 0 1 33.54 83.82" stroke="#38bdf8" stroke-opacity="0.28" stroke-width="1.6" stroke-dasharray="2.5 3.8" stroke-linecap="round"/>
+
+    <circle cx="80.93" cy="88.80" r="1.7" fill="#38bdf8" fill-opacity="0.78"/>
+    <circle cx="74.48" cy="92.52" r="1.4" fill="#0ea5e9" fill-opacity="0.52"/>
+    <circle cx="67.40" cy="94.82" r="1.1" fill="#64748b" fill-opacity="0.40"/>
+
+    <path d="M 27.60 80.24
+             A 38.2 38.2 0 1 1 93.73 77.93
+             L 96.17 78.43
+             L 87.73 83.27
+             Q 88.90 79.60 89.56 75.97
+             A 34.8 34.8 0 1 0 28.63 79.60
+             Z"
+          fill="url(#hbLogoSweep)"/>
+
+    <circle cx="60" cy="60" r="27.2" fill="#090b0f" stroke="#f59e0b" stroke-opacity="0.38" stroke-width="1.25"/>
+
+    <path d="M 60 38.0
+             L 77.5 43.6
+             L 77.5 58.6
+             C 77.5 70.0 69.5 77.8 60 82.4
+             C 50.5 77.8 42.5 70.0 42.5 58.6
+             L 42.5 43.6
+             Z"
+          fill="url(#hbLogoShield)"
+          stroke="#fef3c7"
+          stroke-opacity="0.55"
+          stroke-width="1"/>
+
+    <path d="M 60 42.2
+             L 73.3 46.7
+             L 73.3 58.4
+             C 73.3 67.3 67.3 73.5 60 77.4
+             C 52.7 73.5 46.7 67.3 46.7 58.4
+             L 46.7 46.7
+             Z"
+          fill="url(#hbLogoVault)"
+          stroke="#b45309"
+          stroke-opacity="0.65"
+          stroke-width="0.9"/>
+
+    <path d="M 55.0 57.2 V 53.4 A 5.0 5.0 0 0 1 65.0 53.4 V 57.2"
+          stroke="#fbbf24"
+          stroke-width="2.7"
+          stroke-linecap="round"/>
+    <rect x="51.4" y="56.8" width="17.2" height="12.6" rx="2.8" fill="url(#hbLogoLock)"/>
+    <circle cx="60" cy="62.0" r="2.1" fill="#0c0a06"/>
+    <rect x="59.0" y="62.2" width="2.0" height="4.2" rx="0.9" fill="#0c0a06"/>
+  </g>
+
+  <!-- 3. RIGHT HERO TYPOGRAPHY & GUARANTEE BADGES -->
+  <!-- Top Status Pills Row -->
+  <rect x="272" y="48" width="282" height="26" rx="13" fill="#07221c" stroke="#10b981" stroke-opacity="0.55" stroke-width="1.2"/>
+  <circle cx="288" cy="61" r="4" fill="#34d399"/>
+  <text x="300" y="65" fill="#a7f3d0" font-family="'JetBrains Mono', Consolas, 'DejaVu Sans Mono', monospace" font-size="10.5" font-weight="700" letter-spacing="0.6">PURE RUST · ZERO SILENT DATA LOSS</text>
+
+  <rect x="942" y="48" width="264" height="26" rx="13" fill="#0c1b2c" stroke="#0ea5e9" stroke-opacity="0.48" stroke-width="1.2"/>
+  <text x="1074" y="65" text-anchor="middle" fill="#7dd3fc" font-family="'JetBrains Mono', Consolas, 'DejaVu Sans Mono', monospace" font-size="10.2" font-weight="700" letter-spacing="0.5">DRY-RUN SAFE · 9 TARGETS · DAEMON</text>
+
+  <!-- Main Brand Wordmark -->
+  <text x="270" y="130" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, 'DejaVu Sans', sans-serif" font-size="58" font-weight="800" letter-spacing="-1.2">
+    File<tspan fill="url(#hbTitleAccent)">Cleaner</tspan>
+  </text>
+
+  <!-- Right-Aligned Invariant Summary Pill (Opposite Wordmark) -->
+  <rect x="962" y="92" width="244" height="42" rx="10" fill="#11161f" stroke="#f59e0b" stroke-opacity="0.4" stroke-width="1.1"/>
+  <text x="1084" y="109" text-anchor="middle" fill="#fde047" font-family="'JetBrains Mono', Consolas, 'DejaVu Sans Mono', monospace" font-size="9.5" font-weight="700" letter-spacing="0.8">SAFETY INVARIANTS</text>
+  <text x="1084" y="125" text-anchor="middle" fill="#e2e8f0" font-family="'JetBrains Mono', Consolas, 'DejaVu Sans Mono', monospace" font-size="10.2" font-weight="600">Floor Guard · In-Use Lock</text>
+
+  <!-- Exact Required Subtitle -->
+  <text x="272" y="166" fill="#cbd5e1" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, 'DejaVu Sans', sans-serif" font-size="14.2" font-weight="500">
+    Deterministic Rust Retention Engine · Backup Safety Guards · In-Use Probes · Lifecycle Hooks &amp; Daemon
+  </text>
+
+  <!-- Horizontal Gradient Accent Rule -->
+  <line x1="272" y1="186" x2="1206" y2="186" stroke="url(#hbDivider)" stroke-width="1.5"/>
+
+  <!-- Concise Spec Telemetry Row -->
+  <g font-family="'JetBrains Mono', Consolas, 'DejaVu Sans Mono', monospace" font-size="10.8" font-weight="600">
+    <circle cx="277" cy="206" r="3.2" fill="#10b981"/>
+    <text x="287" y="210" fill="#94a3b8">Rules: <tspan fill="#e2e8f0">max_files · max_age · max_size</tspan></text>
+
+    <circle cx="607" cy="206" r="3.2" fill="#f59e0b"/>
+    <text x="617" y="210" fill="#94a3b8">Guard: <tspan fill="#fde68a">min_keep_files · staleness lock</tspan></text>
+
+    <circle cx="947" cy="206" r="3.2" fill="#0ea5e9"/>
+    <text x="957" y="210" fill="#94a3b8">Audit: <tspan fill="#bae6fd">JSONL · SHA-256 move</tspan></text>
+  </g>
+
+  <!-- 4. CLEAN 4-STAGE PIPELINE PILLS (y = 258 .. 372) -->
+  <!-- Stage 01: Scan & Probes -->
+  <g transform="translate(54, 258)">
+    <rect x="0" y="0" width="258" height="114" rx="14" fill="url(#hbCardBg)" stroke="#0ea5e9" stroke-opacity="0.55" stroke-width="1.4"/>
+    <rect x="14" y="14" width="32" height="20" rx="6" fill="#0ea5e9" fill-opacity="0.18" stroke="#38bdf8" stroke-opacity="0.45" stroke-width="1"/>
+    <text x="30" y="28" text-anchor="middle" fill="#7dd3fc" font-family="'JetBrains Mono', Consolas, 'DejaVu Sans Mono', monospace" font-size="10.5" font-weight="800">01</text>
+    <text x="54" y="28" fill="#38bdf8" font-family="'JetBrains Mono', Consolas, 'DejaVu Sans Mono', monospace" font-size="9.5" font-weight="700" letter-spacing="0.9">DISCOVER</text>
+    <!-- Radar Reticle Vector Icon -->
+    <g transform="translate(224, 14)" stroke="#38bdf8" stroke-width="1.5" stroke-linecap="round">
+      <circle cx="10" cy="10" r="8" stroke-opacity="0.45"/>
+      <circle cx="10" cy="10" r="3.5"/>
+      <line x1="10" y1="0" x2="10" y2="3"/>
+      <line x1="10" y1="17" x2="10" y2="20"/>
+      <line x1="0" y1="10" x2="3" y2="10"/>
+      <line x1="17" y1="10" x2="20" y2="10"/>
+    </g>
+    <text x="14" y="61" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, 'DejaVu Sans', sans-serif" font-size="18.5" font-weight="800">Scan &amp; Probes</text>
+    <text x="14" y="83" fill="#cbd5e1" font-family="'JetBrains Mono', Consolas, 'DejaVu Sans Mono', monospace" font-size="10.2">walkdir · glob · timestamp</text>
+    <text x="14" y="99" fill="#7dd3fc" font-family="'JetBrains Mono', Consolas, 'DejaVu Sans Mono', monospace" font-size="10.2">flock · /proc fd · share_mode</text>
+  </g>
+
+  <!-- Connector 01 -> 02 -->
+  <g transform="translate(312, 315)">
+    <line x1="6" y1="0" x2="30" y2="0" stroke="#38bdf8" stroke-width="2" stroke-linecap="round"/>
+    <path d="M 24 -5 L 32 0 L 24 5" stroke="#f59e0b" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <!-- Stage 02: Backup Guard -->
+  <g transform="translate(352, 258)">
+    <rect x="0" y="0" width="258" height="114" rx="14" fill="url(#hbCardAmber)" stroke="#f59e0b" stroke-opacity="0.65" stroke-width="1.4"/>
+    <rect x="14" y="14" width="32" height="20" rx="6" fill="#f59e0b" fill-opacity="0.20" stroke="#fbbf24" stroke-opacity="0.50" stroke-width="1"/>
+    <text x="30" y="28" text-anchor="middle" fill="#fde047" font-family="'JetBrains Mono', Consolas, 'DejaVu Sans Mono', monospace" font-size="10.5" font-weight="800">02</text>
+    <text x="54" y="28" fill="#fbbf24" font-family="'JetBrains Mono', Consolas, 'DejaVu Sans Mono', monospace" font-size="9.5" font-weight="700" letter-spacing="0.9">PROTECT</text>
+    <!-- Mini Shield Vector Icon -->
+    <g transform="translate(225, 14)" stroke="#fbbf24" stroke-width="1.5" stroke-linejoin="round">
+      <path d="M 9 1 L 17 3.8 V 9.4 C 17 14.2 13.5 17.5 9 19.4 C 4.5 17.5 1 14.2 1 9.4 V 3.8 Z" fill="#f59e0b" fill-opacity="0.18"/>
+      <rect x="6.2" y="9" width="5.6" height="4.8" rx="1" fill="#fbbf24" stroke="none"/>
+      <path d="M 7.2 9 V 7.5 A 1.8 1.8 0 0 1 10.8 7.5 V 9" stroke-width="1.4"/>
+    </g>
+    <text x="14" y="61" fill="#fef3c7" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, 'DejaVu Sans', sans-serif" font-size="18.5" font-weight="800">Backup Guard</text>
+    <text x="14" y="83" fill="#e2e8f0" font-family="'JetBrains Mono', Consolas, 'DejaVu Sans Mono', monospace" font-size="10.2">min_keep_files floor guard</text>
+    <text x="14" y="99" fill="#fcd34d" font-family="'JetBrains Mono', Consolas, 'DejaVu Sans Mono', monospace" font-size="10.2">staleness dead-man freeze lock</text>
+  </g>
+
+  <!-- Connector 02 -> 03 -->
+  <g transform="translate(610, 315)">
+    <line x1="6" y1="0" x2="30" y2="0" stroke="#fbbf24" stroke-width="2" stroke-linecap="round"/>
+    <path d="M 24 -5 L 32 0 L 24 5" stroke="#818cf8" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <!-- Stage 03: Pre-Delete Hook -->
+  <g transform="translate(650, 258)">
+    <rect x="0" y="0" width="258" height="114" rx="14" fill="url(#hbCardBg)" stroke="#818cf8" stroke-opacity="0.55" stroke-width="1.4"/>
+    <rect x="14" y="14" width="32" height="20" rx="6" fill="#818cf8" fill-opacity="0.20" stroke="#a5b4fc" stroke-opacity="0.45" stroke-width="1"/>
+    <text x="30" y="28" text-anchor="middle" fill="#c7d2fe" font-family="'JetBrains Mono', Consolas, 'DejaVu Sans Mono', monospace" font-size="10.5" font-weight="800">03</text>
+    <text x="54" y="28" fill="#a5b4fc" font-family="'JetBrains Mono', Consolas, 'DejaVu Sans Mono', monospace" font-size="9.5" font-weight="700" letter-spacing="0.9">VERIFY GATE</text>
+    <!-- Hook Terminal Gate Vector Icon -->
+    <g transform="translate(224, 15)" stroke="#a5b4fc" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="1" y="1" width="18" height="16" rx="3.5" fill="#818cf8" fill-opacity="0.14"/>
+      <path d="M 5 6.5 L 8.5 9.5 L 5 12.5"/>
+      <line x1="10.5" y1="12.5" x2="14.5" y2="12.5"/>
+    </g>
+    <text x="14" y="61" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, 'DejaVu Sans', sans-serif" font-size="18.5" font-weight="800">Pre-Delete Hook</text>
+    <text x="14" y="83" fill="#cbd5e1" font-family="'JetBrains Mono', Consolas, 'DejaVu Sans Mono', monospace" font-size="10.2">FILECLEANER_* env · timeout</text>
+    <text x="14" y="99" fill="#c7d2fe" font-family="'JetBrains Mono', Consolas, 'DejaVu Sans Mono', monospace" font-size="10.2">exit 42 skip · abort policy</text>
+  </g>
+
+  <!-- Connector 03 -> 04 -->
+  <g transform="translate(908, 315)">
+    <line x1="6" y1="0" x2="30" y2="0" stroke="#a5b4fc" stroke-width="2" stroke-linecap="round"/>
+    <path d="M 24 -5 L 32 0 L 24 5" stroke="#10b981" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <!-- Stage 04: Transform / Clean -->
+  <g transform="translate(948, 258)">
+    <rect x="0" y="0" width="258" height="114" rx="14" fill="url(#hbCardEmerald)" stroke="#10b981" stroke-opacity="0.60" stroke-width="1.4"/>
+    <rect x="14" y="14" width="32" height="20" rx="6" fill="#10b981" fill-opacity="0.20" stroke="#34d399" stroke-opacity="0.50" stroke-width="1"/>
+    <text x="30" y="28" text-anchor="middle" fill="#6ee7b7" font-family="'JetBrains Mono', Consolas, 'DejaVu Sans Mono', monospace" font-size="10.5" font-weight="800">04</text>
+    <text x="54" y="28" fill="#34d399" font-family="'JetBrains Mono', Consolas, 'DejaVu Sans Mono', monospace" font-size="9.5" font-weight="700" letter-spacing="0.9">EXECUTE</text>
+    <!-- Transform / Clean Sweep Vector Icon -->
+    <g transform="translate(224, 15)" stroke="#34d399" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M 10 2 A 8 8 0 1 1 3.5 14.5"/>
+      <path d="M 10 2 L 13.5 4.8 L 9.5 6.8" fill="#34d399"/>
+      <path d="M 6.5 10.2 L 9 12.8 L 13.5 7.8"/>
+    </g>
+    <text x="14" y="61" fill="#ecfdf5" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, 'DejaVu Sans', sans-serif" font-size="18.5" font-weight="800">Transform / Clean</text>
+    <text x="14" y="83" fill="#cbd5e1" font-family="'JetBrains Mono', Consolas, 'DejaVu Sans Mono', monospace" font-size="10.2">rename · compress · sha256 move</text>
+    <text x="14" y="99" fill="#6ee7b7" font-family="'JetBrains Mono', Consolas, 'DejaVu Sans Mono', monospace" font-size="10.2">copy-truncate · trash · delete</text>
+  </g>
+</svg>

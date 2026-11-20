@@ -1,0 +1,2084 @@
+//! Configuration schema, human-unit parsers, and invariant validation.
+
+use crate::error::{FileCleanerError, Result};
+use chrono::format::{Item, StrftimeItems};
+use globset::Glob;
+use regex::Regex;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::collections::{BTreeMap, HashSet};
+use std::fs;
+use std::path::{Component, Path, PathBuf};
+use std::time::Duration;
+
+/// Top-level FileCleaner configuration loaded from TOML or YAML.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Config {
+    /// Global dry-run switch preventing all filesystem mutations when `true`.
+    #[serde(default)]
+    pub dry_run: bool,
+
+    /// Optional top-level path alias for JSONL audit logging (`[audit].log_path` preferred).
+    #[serde(default)]
+    pub audit_log: Option<PathBuf>,
+
+    /// Global daemon scheduling, watcher, and control file settings.
+    #[serde(default)]
+    pub daemon: DaemonConfig,
+
+    /// Structured JSONL audit logging settings.
+    #[serde(default)]
+    pub audit: AuditConfig,
+
+    /// Fallback quarantine directory when a rule selects `ActionStep::Trash`
+    /// without specifying a rule-local `trash_dir`.
+    #[serde(default)]
+    pub global_trash_dir: Option<PathBuf>,
+
+    /// Ordered list of directory retention and lifecycle rules.
+    #[serde(default)]
+    pub rules: Vec<RuleConfig>,
+}
+
+impl Config {
+    /// Returns the effective audit log path, preferring `[audit].log_path` over top-level `audit_log`.
+    pub fn effective_audit_log(&self) -> Option<&Path> {
+        self.audit.log_path.as_deref().or(self.audit_log.as_deref())
+    }
+}
+
+/// Execution scheduling mode for `filecleaner daemon run`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DaemonMode {
+    /// Fixed-interval polling loop using `daemon.interval`.
+    #[serde(alias = "Interval")]
+    Interval,
+    /// Event-driven filesystem watcher using `notify` with `daemon.debounce`.
+    #[serde(alias = "Notify")]
+    Notify,
+    /// Combined event-driven watcher and fallback periodic polling interval.
+    #[default]
+    #[serde(alias = "Hybrid")]
+    Hybrid,
+}
+
+/// Daemon mode scheduling, watcher, and lifecycle control files.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DaemonConfig {
+    /// Scheduling mode (`interval`, `notify`, or `hybrid`).
+    #[serde(default)]
+    pub mode: DaemonMode,
+
+    /// Periodic sweep interval (e.g. `"60s"`, `"5m"`).
+    #[serde(
+        default = "default_daemon_interval",
+        alias = "poll_interval",
+        with = "serde_duration"
+    )]
+    pub interval: Duration,
+
+    /// Enable event-driven filesystem watcher triggers via `notify`.
+    #[serde(default)]
+    pub watch: bool,
+
+    /// Coalescing debounce delay for filesystem watcher events.
+    #[serde(default = "default_debounce", with = "serde_duration")]
+    pub debounce: Duration,
+
+    /// Execute an immediate sweep upon daemon startup before entering the wait loop.
+    #[serde(default = "default_true")]
+    pub sweep_on_start: bool,
+
+    /// Optional PID file path written on daemon start and removed on shutdown.
+    #[serde(default)]
+    pub pid_file: Option<PathBuf>,
+
+    /// Optional live JSON daemon state output path.
+    #[serde(default)]
+    pub state_file: Option<PathBuf>,
+
+    /// Optional stop-trigger file path watched for cooperative shutdown.
+    #[serde(default)]
+    pub stop_file: Option<PathBuf>,
+}
+
+impl Default for DaemonConfig {
+    fn default() -> Self {
+        Self {
+            mode: DaemonMode::Hybrid,
+            interval: default_daemon_interval(),
+            watch: false,
+            debounce: default_debounce(),
+            sweep_on_start: true,
+            pid_file: None,
+            state_file: None,
+            stop_file: None,
+        }
+    }
+}
+
+/// Structured audit logging configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AuditConfig {
+    /// Optional path where JSONL audit entries are appended.
+    #[serde(default)]
+    pub log_path: Option<PathBuf>,
+
+    /// Emit machine-readable JSON Lines entries.
+    #[serde(default = "default_true")]
+    pub jsonl: bool,
+}
+
+impl Default for AuditConfig {
+    fn default() -> Self {
+        Self {
+            log_path: None,
+            jsonl: true,
+        }
+    }
+}
+
+/// Per-directory retention, safety guardrail, hook, and action rule.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuleConfig {
+    /// Unique identifier for the rule across the configuration.
+    pub name: String,
+
+    /// Root directory monitored by this rule.
+    pub path: PathBuf,
+
+    /// Whether the rule participates in sweeps (defaults to `true`).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Traverse subdirectories recursively when `true`.
+    #[serde(default)]
+    pub recursive: bool,
+
+    /// Maximum directory recursion depth (ignored unless `recursive` is `true`).
+    #[serde(default)]
+    pub max_depth: Option<usize>,
+
+    /// Follow symbolic links during traversal (defaults to `false` for safety).
+    #[serde(default)]
+    pub follow_symlinks: bool,
+
+    /// Glob patterns selecting eligible files (empty selects all files).
+    #[serde(default)]
+    pub include_globs: Vec<String>,
+
+    /// Glob patterns excluding files or subdirectories from selection.
+    #[serde(default)]
+    pub exclude_globs: Vec<String>,
+
+    /// Optional regular expression matching candidate relative paths or names.
+    #[serde(default)]
+    pub include_regex: Option<String>,
+
+    /// Optional regular expression excluding candidate relative paths or names.
+    #[serde(default)]
+    pub exclude_regex: Option<String>,
+
+    /// Optional lower file-size bound for candidate selection (`min_file_size <= size <= max_file_size`).
+    #[serde(default, with = "serde_opt_bytes")]
+    pub min_file_size: Option<u64>,
+
+    /// Optional upper file-size bound for candidate selection.
+    #[serde(default, with = "serde_opt_bytes")]
+    pub max_file_size: Option<u64>,
+
+    /// Timestamp extraction strategy used to order and age files.
+    #[serde(default)]
+    pub time_basis: TimeBasis,
+
+    /// Regular expression capturing timestamp substring when `time_basis = "filename_date"`.
+    #[serde(default)]
+    pub filename_date_regex: Option<String>,
+
+    /// Chrono `strftime` format used to parse the captured filename date string.
+    #[serde(default)]
+    pub filename_date_format: Option<String>,
+
+    /// Maximum number of retained files matching this rule.
+    #[serde(default)]
+    pub max_files: Option<usize>,
+
+    /// Maximum age permitted before a candidate becomes eligible for eviction.
+    #[serde(default, with = "serde_opt_duration")]
+    pub max_age: Option<Duration>,
+
+    /// Maximum aggregate byte budget across retained files in this rule.
+    #[serde(default, with = "serde_opt_bytes")]
+    pub max_total_size: Option<u64>,
+
+    /// Logical combination mode when multiple retention limits are specified.
+    #[serde(default)]
+    pub combine_mode: CombineMode,
+
+    /// Order in which excess files are selected for eviction.
+    #[serde(default)]
+    pub eviction_order: EvictionOrder,
+
+    /// Force dry-run planning without mutating filesystem state for this rule.
+    #[serde(default)]
+    pub dry_run: bool,
+
+    /// Backup safety guardrails protecting valid backups and preventing stale wipes.
+    #[serde(default)]
+    pub backup_guard: BackupGuardConfig,
+
+    /// Multi-probe active-file protection settings.
+    #[serde(default)]
+    pub in_use: InUseConfig,
+
+    /// Optional external veto command executed prior to mutating/deleting a file.
+    #[serde(default, alias = "pre_hook")]
+    pub pre_delete_hook: Option<HookConfig>,
+
+    /// Ordered pipeline of lifecycle actions executed on each evicted candidate.
+    #[serde(default = "default_actions")]
+    pub actions: Vec<ActionStep>,
+
+    /// Destination directory required when `actions` includes `ActionStep::Move`.
+    #[serde(default)]
+    pub move_to: Option<PathBuf>,
+
+    /// Optional `chrono` `strftime` date subdirectory template appended to `move_to`.
+    #[serde(default)]
+    pub move_date_subdir: Option<String>,
+
+    /// Overwrite existing destination files during `ActionStep::Move`.
+    #[serde(default)]
+    pub move_overwrite: bool,
+
+    /// Rule-specific quarantine directory used when `actions` includes `ActionStep::Trash`.
+    #[serde(default)]
+    pub trash_dir: Option<PathBuf>,
+
+    /// Codec selected when `actions` includes `ActionStep::Compress`.
+    #[serde(default)]
+    pub compression: CompressionFormat,
+
+    /// Optional codec-specific compression level.
+    #[serde(default)]
+    pub compression_level: Option<u32>,
+
+    /// Remove source file after `ActionStep::Compress` succeeds (defaults to `true`).
+    #[serde(default = "default_true")]
+    pub compress_remove_source: bool,
+
+    /// Overwrite existing archive destination during `ActionStep::Compress`.
+    #[serde(default)]
+    pub compress_overwrite: bool,
+
+    /// Destination directory used by `ActionStep::CopyTruncate` (falls back to `move_to`).
+    #[serde(default)]
+    pub copy_truncate_to: Option<PathBuf>,
+
+    /// Optional filename template when `actions` includes `ActionStep::RenameByDate`.
+    #[serde(default)]
+    pub rename_template: Option<String>,
+}
+
+/// Source of truth for candidate file timestamps.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TimeBasis {
+    /// Filesystem modification timestamp (`mtime`).
+    #[default]
+    #[serde(alias = "Modified")]
+    Modified,
+    /// Filesystem creation / birth timestamp (`birthtime`).
+    #[serde(alias = "Created")]
+    Created,
+    /// Timestamp parsed from the filename using `filename_date_regex` and `filename_date_format`.
+    #[serde(alias = "FilenameDate")]
+    FilenameDate,
+}
+
+/// Combination semantics when multiple retention thresholds are configured.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CombineMode {
+    /// Evict a file if it violates any configured threshold (union).
+    #[default]
+    #[serde(alias = "Any")]
+    Any,
+    /// Evict a file only if it satisfies all configured thresholds (intersection).
+    #[serde(alias = "All")]
+    All,
+}
+
+/// Ordering applied when selecting excess files for count or size caps.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum EvictionOrder {
+    /// Evict oldest candidates first (`t(f)` ascending).
+    #[default]
+    #[serde(alias = "OldestFirst")]
+    OldestFirst,
+    /// Evict largest candidates first (`size(f)` descending, ties oldest first).
+    #[serde(alias = "LargestFirst")]
+    LargestFirst,
+}
+
+/// Backup safety guardrails enforcing minimum valid copies and freshness bounds.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BackupGuardConfig {
+    /// Enable backup safety guardrails for this rule.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Minimum number of valid backups strictly protected from eviction.
+    #[serde(default)]
+    pub min_keep_files: usize,
+
+    /// Minimum byte size for a file to be considered a valid, non-empty backup.
+    #[serde(default, alias = "min_valid_size", with = "serde_bytes")]
+    pub min_valid_backup_bytes: u64,
+
+    /// Dead-man's-switch freshness window: freeze eviction if newest valid backup is older.
+    #[serde(default, alias = "max_newest_age", with = "serde_opt_duration")]
+    pub require_newer_within: Option<Duration>,
+
+    /// Absolute UTC staleness cutoff: freeze eviction if newest valid backup predates this instant.
+    #[serde(default, alias = "min_newest_timestamp")]
+    pub freeze_if_newest_older_than: Option<chrono::DateTime<chrono::Utc>>,
+
+    /// Freeze eviction when zero valid backups satisfy `min_valid_backup_bytes`.
+    #[serde(default = "default_true", alias = "freeze_on_empty")]
+    pub freeze_on_empty_valid: bool,
+}
+
+impl Default for BackupGuardConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            min_keep_files: 0,
+            min_valid_backup_bytes: 0,
+            require_newer_within: None,
+            freeze_if_newest_older_than: None,
+            freeze_on_empty_valid: true,
+        }
+    }
+}
+
+/// Multi-probe active-writer and lock-detection configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InUseConfig {
+    /// Enable in-use detection probes before planning/executing eviction.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Check companion sidecar lock/temp files (`.lock`, `.part`, etc.).
+    #[serde(default = "default_true")]
+    pub check_sidecar_locks: bool,
+
+    /// Suffixes treated as active sidecar lock or partial-transfer files.
+    #[serde(default = "default_sidecar_suffixes")]
+    pub sidecar_suffixes: Vec<String>,
+
+    /// Probe OS-native locks (`flock` on Unix, `share_mode(0)` on Windows).
+    #[serde(default = "default_true")]
+    pub check_os_locks: bool,
+
+    /// Probe `/proc/*/fd` open file descriptors on Linux.
+    #[serde(default = "default_true")]
+    pub check_proc_fd: bool,
+
+    /// Minimum elapsed age since `mtime` before a file can be touched.
+    #[serde(default, with = "serde_opt_duration")]
+    pub min_idle_age: Option<Duration>,
+
+    /// Two-point `(size, mtime)` stability verification window.
+    #[serde(default, with = "serde_opt_duration")]
+    pub stability_window: Option<Duration>,
+}
+
+impl Default for InUseConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            check_sidecar_locks: true,
+            sidecar_suffixes: default_sidecar_suffixes(),
+            check_os_locks: true,
+            check_proc_fd: true,
+            min_idle_age: None,
+            stability_window: None,
+        }
+    }
+}
+
+/// Pre-action / pre-delete lifecycle hook configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HookConfig {
+    /// Executable command path or name.
+    pub command: String,
+
+    /// Argument templates supporting `{path}`, `{name}`, `{size}`, `{mtime_iso}`, `{rule}`.
+    #[serde(default)]
+    pub args: Vec<String>,
+
+    /// Maximum runtime allowed before terminating the hook process.
+    #[serde(default = "default_hook_timeout", with = "serde_duration")]
+    pub timeout: Duration,
+
+    /// Failure handling policy when the hook exits non-zero (excluding `skip_exit_code`) or times out.
+    #[serde(default)]
+    pub on_failure: HookFailurePolicy,
+
+    /// Exit code interpreted as a benign per-file skip veto (default `42`).
+    #[serde(default = "default_skip_exit_code")]
+    pub skip_exit_code: Option<i32>,
+
+    /// Execute the hook even when running under `--dry-run` / `plan` (defaults to `false`).
+    #[serde(default)]
+    pub run_in_dry_run: bool,
+
+    /// Optional working directory for hook execution.
+    #[serde(default)]
+    pub working_dir: Option<PathBuf>,
+
+    /// Additional static environment variables passed to the hook process.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+}
+
+/// Action taken when a hook fails unexpectedly or times out.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HookFailurePolicy {
+    /// Skip only the current file and proceed to subsequent files.
+    #[default]
+    #[serde(alias = "AbortFile")]
+    AbortFile,
+    /// Abort all remaining actions for the current rule.
+    #[serde(alias = "AbortRule")]
+    AbortRule,
+    /// Log a warning and continue executing lifecycle actions on the file.
+    #[serde(alias = "WarnAndContinue")]
+    WarnAndContinue,
+}
+
+/// Ordered transformation or cleanup steps applied to each evicted candidate.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionStep {
+    /// Rename file according to timestamp and `rename_template`.
+    #[serde(alias = "RenameByDate")]
+    RenameByDate,
+    /// Compress file using the configured pure-Rust `CompressionFormat`.
+    #[serde(alias = "Compress")]
+    Compress,
+    /// Move file atomically or cross-filesystem with SHA-256 verification.
+    #[serde(alias = "Move")]
+    Move,
+    /// Atomically copy content and truncate active file in place (explicit opt-in).
+    #[serde(alias = "CopyTruncate")]
+    CopyTruncate,
+    /// Move file to quarantine directory (`trash_dir` or `global_trash_dir`).
+    #[serde(alias = "Trash")]
+    Trash,
+    /// Permanently unlink the candidate file.
+    #[serde(alias = "Delete")]
+    Delete,
+}
+
+/// Pure-Rust compression formats supported by `ActionStep::Compress`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CompressionFormat {
+    /// Standard gzip stream via `flate2` (`miniz_oxide`).
+    #[default]
+    #[serde(alias = "Gzip")]
+    Gzip,
+    /// High-speed LZ4 frame via `lz4_flex`.
+    #[serde(alias = "Lz4")]
+    Lz4,
+    /// High-ratio Brotli stream via `brotli`.
+    #[serde(alias = "Brotli")]
+    Brotli,
+    /// Deflate-compressed ZIP archive via `zip`.
+    #[serde(alias = "Zip")]
+    Zip,
+}
+
+impl Config {
+    /// Parses a TOML or YAML configuration file, auto-detecting format from its file extension.
+    ///
+    /// Call [`Config::validate`] afterward to enforce semantic invariants, or use
+    /// [`Config::load_validated`] to parse and validate in one step.
+    pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        let raw = fs::read_to_string(path).map_err(|err| FileCleanerError::io(path, err))?;
+        let ext = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+
+        match ext.as_str() {
+            "toml" => toml::from_str::<Self>(&raw).map_err(|err| FileCleanerError::ConfigParse {
+                path: path.to_path_buf(),
+                reason: err.to_string(),
+            }),
+            "yaml" | "yml" => {
+                serde_yaml_ng::from_str::<Self>(&raw).map_err(|err| FileCleanerError::ConfigParse {
+                    path: path.to_path_buf(),
+                    reason: err.to_string(),
+                })
+            }
+            _ => Err(FileCleanerError::ConfigFormat {
+                path: path.to_path_buf(),
+                extension: ext,
+            }),
+        }
+    }
+
+    /// Parses a configuration file and immediately enforces [`Config::validate`].
+    pub fn load_validated(path: impl AsRef<Path>) -> Result<Self> {
+        let config = Self::from_file(path)?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Validates all structural, regex, glob, retention, and path-safety invariants.
+    pub fn validate(&self) -> Result<()> {
+        if self.daemon.interval.is_zero() {
+            return Err(FileCleanerError::ConfigValidation(
+                "daemon.interval must be greater than zero".to_string(),
+            ));
+        }
+
+        if let Some(audit_log) = &self.audit_log {
+            if audit_log.as_os_str().is_empty() {
+                return Err(FileCleanerError::ConfigValidation(
+                    "audit_log cannot be empty".to_string(),
+                ));
+            }
+        }
+
+        if self.rules.is_empty() {
+            return Err(FileCleanerError::ConfigValidation(
+                "configuration must define at least one rule".to_string(),
+            ));
+        }
+
+        if let Some(global_trash) = &self.global_trash_dir {
+            if global_trash.as_os_str().is_empty() {
+                return Err(FileCleanerError::ConfigValidation(
+                    "global_trash_dir cannot be empty".to_string(),
+                ));
+            }
+        }
+
+        let mut seen_names = HashSet::with_capacity(self.rules.len());
+
+        for rule in &self.rules {
+            let trimmed_name = rule.name.trim();
+            if trimmed_name.is_empty() {
+                return Err(FileCleanerError::ConfigValidation(
+                    "rule name must not be empty".to_string(),
+                ));
+            }
+            if !seen_names.insert(trimmed_name.to_string()) {
+                return Err(FileCleanerError::ConfigValidation(format!(
+                    "duplicate rule name '{trimmed_name}'"
+                )));
+            }
+            if rule.path.as_os_str().is_empty() {
+                return Err(FileCleanerError::ConfigValidation(format!(
+                    "rule '{trimmed_name}' must specify a non-empty path"
+                )));
+            }
+            if rule.actions.is_empty() {
+                return Err(FileCleanerError::ConfigValidation(format!(
+                    "rule '{trimmed_name}' must specify at least one action step"
+                )));
+            }
+
+            for pattern in &rule.include_globs {
+                Glob::new(pattern).map_err(|source| FileCleanerError::InvalidGlob {
+                    pattern: pattern.clone(),
+                    source,
+                })?;
+            }
+
+            let mut compiled_exclude_globs = Vec::with_capacity(rule.exclude_globs.len());
+            for pattern in &rule.exclude_globs {
+                let glob = Glob::new(pattern).map_err(|source| FileCleanerError::InvalidGlob {
+                    pattern: pattern.clone(),
+                    source,
+                })?;
+                compiled_exclude_globs.push(glob.compile_matcher());
+            }
+
+            if let Some(pattern) = &rule.include_regex {
+                Regex::new(pattern).map_err(|source| FileCleanerError::InvalidRegex {
+                    pattern: pattern.clone(),
+                    source,
+                })?;
+            }
+
+            let compiled_exclude_regex = if let Some(pattern) = &rule.exclude_regex {
+                Some(
+                    Regex::new(pattern).map_err(|source| FileCleanerError::InvalidRegex {
+                        pattern: pattern.clone(),
+                        source,
+                    })?,
+                )
+            } else {
+                None
+            };
+
+            if let Some(pattern) = &rule.filename_date_regex {
+                Regex::new(pattern).map_err(|source| FileCleanerError::InvalidRegex {
+                    pattern: pattern.clone(),
+                    source,
+                })?;
+            }
+
+            if rule.time_basis == TimeBasis::FilenameDate {
+                if rule
+                    .filename_date_regex
+                    .as_deref()
+                    .map(str::trim)
+                    .unwrap_or("")
+                    .is_empty()
+                {
+                    return Err(FileCleanerError::ConfigValidation(format!(
+                        "rule '{trimmed_name}' uses time_basis=filename_date without filename_date_regex"
+                    )));
+                }
+                if rule
+                    .filename_date_format
+                    .as_deref()
+                    .map(str::trim)
+                    .unwrap_or("")
+                    .is_empty()
+                {
+                    return Err(FileCleanerError::ConfigValidation(format!(
+                        "rule '{trimmed_name}' uses time_basis=filename_date without filename_date_format"
+                    )));
+                }
+                if let Some(fmt) = &rule.filename_date_format {
+                    if StrftimeItems::new(fmt).any(|item| matches!(item, Item::Error)) {
+                        return Err(FileCleanerError::ConfigValidation(format!(
+                            "rule '{trimmed_name}' has invalid filename_date_format '{fmt}'"
+                        )));
+                    }
+                }
+            }
+
+            if let (Some(min_sz), Some(max_sz)) = (rule.min_file_size, rule.max_file_size) {
+                if min_sz > max_sz {
+                    return Err(FileCleanerError::ConfigValidation(format!(
+                        "rule '{trimmed_name}' has min_file_size ({min_sz}) > max_file_size ({max_sz})"
+                    )));
+                }
+            }
+
+            if let Some(max_files) = rule.max_files {
+                if max_files < rule.backup_guard.min_keep_files {
+                    return Err(FileCleanerError::ConfigValidation(format!(
+                        "rule '{trimmed_name}' has max_files ({max_files}) < backup_guard.min_keep_files ({})",
+                        rule.backup_guard.min_keep_files
+                    )));
+                }
+            }
+
+            for (idx, step) in rule.actions.iter().enumerate() {
+                if matches!(step, ActionStep::Delete | ActionStep::Trash)
+                    && idx + 1 < rule.actions.len()
+                {
+                    return Err(FileCleanerError::ConfigValidation(format!(
+                        "rule '{trimmed_name}' has terminal action {step:?} followed by additional steps"
+                    )));
+                }
+            }
+
+            if rule.actions.contains(&ActionStep::Move) && rule.move_to.is_none() {
+                return Err(FileCleanerError::ConfigValidation(format!(
+                    "rule '{trimmed_name}' includes ActionStep::Move without move_to destination"
+                )));
+            }
+
+            if let Some(subdir_fmt) = &rule.move_date_subdir {
+                if subdir_fmt.trim().is_empty()
+                    || StrftimeItems::new(subdir_fmt).any(|item| matches!(item, Item::Error))
+                {
+                    return Err(FileCleanerError::ConfigValidation(format!(
+                        "rule '{trimmed_name}' has invalid move_date_subdir '{subdir_fmt}'"
+                    )));
+                }
+            }
+
+            if rule.actions.contains(&ActionStep::CopyTruncate)
+                && rule.copy_truncate_to.is_none()
+                && rule.move_to.is_none()
+            {
+                return Err(FileCleanerError::ConfigValidation(format!(
+                    "rule '{trimmed_name}' includes ActionStep::CopyTruncate without copy_truncate_to or move_to destination"
+                )));
+            }
+
+            if rule.actions.contains(&ActionStep::Trash)
+                && rule.trash_dir.is_none()
+                && self.global_trash_dir.is_none()
+            {
+                return Err(FileCleanerError::ConfigValidation(format!(
+                    "rule '{trimmed_name}' includes ActionStep::Trash without trash_dir or global_trash_dir"
+                )));
+            }
+
+            if let Some(hook) = &rule.pre_delete_hook {
+                if hook.command.trim().is_empty() {
+                    return Err(FileCleanerError::ConfigValidation(format!(
+                        "rule '{trimmed_name}' pre_delete_hook command must not be empty"
+                    )));
+                }
+                if hook.timeout.is_zero() {
+                    return Err(FileCleanerError::ConfigValidation(format!(
+                        "rule '{trimmed_name}' pre_delete_hook timeout must be greater than zero"
+                    )));
+                }
+            }
+
+            if rule.recursive {
+                if let Some(move_dest) = &rule.move_to {
+                    validate_destination_not_in_recursive_root(
+                        trimmed_name,
+                        "move_to",
+                        &rule.path,
+                        move_dest,
+                        &compiled_exclude_globs,
+                        compiled_exclude_regex.as_ref(),
+                    )?;
+                }
+
+                if let Some(ct_dest) = &rule.copy_truncate_to {
+                    validate_destination_not_in_recursive_root(
+                        trimmed_name,
+                        "copy_truncate_to",
+                        &rule.path,
+                        ct_dest,
+                        &compiled_exclude_globs,
+                        compiled_exclude_regex.as_ref(),
+                    )?;
+                }
+
+                let effective_trash = rule
+                    .trash_dir
+                    .as_ref()
+                    .or(self.global_trash_dir.as_ref())
+                    .filter(|_| {
+                        rule.actions.contains(&ActionStep::Trash) || rule.trash_dir.is_some()
+                    });
+
+                if let Some(trash_dest) = effective_trash {
+                    validate_destination_not_in_recursive_root(
+                        trimmed_name,
+                        "trash_dir",
+                        &rule.path,
+                        trash_dest,
+                        &compiled_exclude_globs,
+                        compiled_exclude_regex.as_ref(),
+                    )?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Rejects destination directories nested inside a recursive scan root unless explicitly excluded.
+fn validate_destination_not_in_recursive_root(
+    rule_name: &str,
+    field_name: &str,
+    root: &Path,
+    dest: &Path,
+    exclude_globs: &[globset::GlobMatcher],
+    exclude_regex: Option<&Regex>,
+) -> Result<()> {
+    let norm_root = resolve_path_lexically(root);
+    let norm_dest = resolve_path_lexically(dest);
+
+    if norm_dest == norm_root {
+        return Err(FileCleanerError::ConfigValidation(format!(
+            "rule '{rule_name}' {field_name} ('{}') must not equal recursive rule path",
+            dest.display()
+        )));
+    }
+
+    if let Ok(rel) = norm_dest.strip_prefix(&norm_root) {
+        if !is_relative_path_excluded(rel, exclude_globs, exclude_regex) {
+            return Err(FileCleanerError::ConfigValidation(format!(
+                "rule '{rule_name}' {field_name} ('{}') resides inside recursive rule path ('{}') without matching exclude_globs/exclude_regex",
+                dest.display(),
+                root.display()
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+/// Checks whether a relative path or any of its parent segments matches the rule's exclusions.
+fn is_relative_path_excluded(
+    rel: &Path,
+    exclude_globs: &[globset::GlobMatcher],
+    exclude_regex: Option<&Regex>,
+) -> bool {
+    let mut prefix = PathBuf::new();
+    for component in rel.components() {
+        prefix.push(component);
+        let slash_prefix = to_forward_slash_str(&prefix);
+        if exclude_globs
+            .iter()
+            .any(|g| g.is_match(&prefix) || g.is_match(&slash_prefix))
+        {
+            return true;
+        }
+        if let Some(re) = exclude_regex {
+            if re.is_match(&slash_prefix) {
+                return true;
+            }
+        }
+    }
+
+    let probe_child = rel.join("__filecleaner_probe__");
+    let slash_child = to_forward_slash_str(&probe_child);
+    if exclude_globs
+        .iter()
+        .any(|g| g.is_match(&probe_child) || g.is_match(&slash_child))
+    {
+        return true;
+    }
+    if let Some(re) = exclude_regex {
+        if re.is_match(&slash_child) {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn to_forward_slash_str(path: &Path) -> String {
+    path.components()
+        .filter_map(|c| match c {
+            Component::Normal(os) => Some(os.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Normalizes a path by canonicalizing the deepest existing ancestor and appending remaining
+/// normalized components cleanly without requiring the final leaf directory to exist yet.
+fn resolve_path_lexically(path: &Path) -> PathBuf {
+    let abs = if path.is_absolute() {
+        path.to_path_buf()
+    } else if let Ok(cwd) = std::env::current_dir() {
+        cwd.join(path)
+    } else {
+        path.to_path_buf()
+    };
+
+    let mut stack: Vec<Component<'_>> = Vec::new();
+    for comp in abs.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if matches!(stack.last(), Some(Component::Normal(_))) {
+                    stack.pop();
+                }
+            }
+            other => stack.push(other),
+        }
+    }
+
+    let mut lexical = PathBuf::new();
+    for comp in stack {
+        lexical.push(comp.as_os_str());
+    }
+
+    // Attempt to resolve symlinks on the deepest existing ancestor so alias comparisons match.
+    let mut existing = lexical.as_path();
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    while !existing.exists() {
+        if let Some(name) = existing.file_name() {
+            tail.push(name.to_os_string());
+        } else {
+            break;
+        }
+        match existing.parent() {
+            Some(parent) => existing = parent,
+            None => break,
+        }
+    }
+
+    if let Ok(mut canon) = fs::canonicalize(existing) {
+        for seg in tail.into_iter().rev() {
+            canon.push(seg);
+        }
+        canon
+    } else {
+        lexical
+    }
+}
+
+/// Parses human-readable byte sizes (`B`, `KB`, `KiB`, `MB`, `MiB`, `GB`, `GiB`, `TB`, `TiB`, `PB`, `PiB`).
+///
+/// Accepts plain integers (`"1024"`), SI decimal units (`"10MB"` = `10_000_000`),
+/// IEC binary units (`"10MiB"` = `10_485_760`), and fractional values (`"1.5 GiB"`).
+pub fn parse_bytes(input: &str) -> Result<u64> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(FileCleanerError::InvalidByteSize(input.to_string()));
+    }
+
+    let split_idx = trimmed
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(trimmed.len());
+
+    let (num_str, unit_raw) = trimmed.split_at(split_idx);
+    let num_str = num_str.trim();
+    let unit = unit_raw.trim().to_ascii_lowercase();
+
+    if num_str.is_empty() || num_str.starts_with('-') {
+        return Err(FileCleanerError::InvalidByteSize(input.to_string()));
+    }
+
+    let multiplier: u64 = match unit.as_str() {
+        "" | "b" => 1,
+        "k" | "kib" => 1024,
+        "kb" => 1_000,
+        "m" | "mib" => 1024_u64.pow(2),
+        "mb" => 1_000_u64.pow(2),
+        "g" | "gib" => 1024_u64.pow(3),
+        "gb" => 1_000_u64.pow(3),
+        "t" | "tib" => 1024_u64.pow(4),
+        "tb" => 1_000_u64.pow(4),
+        "p" | "pib" => 1024_u64.pow(5),
+        "pb" => 1_000_u64.pow(5),
+        _ => return Err(FileCleanerError::InvalidByteSize(input.to_string())),
+    };
+
+    if !num_str.contains('.') {
+        let integer: u64 = num_str
+            .parse()
+            .map_err(|_| FileCleanerError::InvalidByteSize(input.to_string()))?;
+        return integer
+            .checked_mul(multiplier)
+            .ok_or_else(|| FileCleanerError::InvalidByteSize(input.to_string()));
+    }
+
+    if num_str.matches('.').count() > 1 {
+        return Err(FileCleanerError::InvalidByteSize(input.to_string()));
+    }
+
+    let float_val: f64 = num_str
+        .parse()
+        .map_err(|_| FileCleanerError::InvalidByteSize(input.to_string()))?;
+    if !float_val.is_finite() || float_val.is_sign_negative() {
+        return Err(FileCleanerError::InvalidByteSize(input.to_string()));
+    }
+
+    let scaled = float_val * (multiplier as f64);
+    if !scaled.is_finite() || scaled > (u64::MAX as f64) {
+        return Err(FileCleanerError::InvalidByteSize(input.to_string()));
+    }
+
+    Ok(scaled.round() as u64)
+}
+
+/// Parses human-readable duration strings supporting `ms`, `s`, `m`, `h`, `d`, `w`
+/// as single tokens (`"30d"`, `"500ms"`) or compound sequences (`"1d 12h"`, `"2m30s"`).
+pub fn parse_duration_str(input: &str) -> Result<Duration> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(FileCleanerError::InvalidDuration(input.to_string()));
+    }
+
+    // Bare integer fallback treated as seconds when no suffix is present.
+    if trimmed.chars().all(|c| c.is_ascii_digit()) {
+        let secs: u64 = trimmed
+            .parse()
+            .map_err(|_| FileCleanerError::InvalidDuration(input.to_string()))?;
+        return Ok(Duration::from_secs(secs));
+    }
+
+    let bytes = trimmed.as_bytes();
+    let mut idx = 0usize;
+    let mut total_millis: u128 = 0;
+    let mut parsed_any = false;
+
+    while idx < bytes.len() {
+        while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+            idx += 1;
+        }
+        if idx >= bytes.len() {
+            break;
+        }
+
+        let num_start = idx;
+        while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+            idx += 1;
+        }
+        if idx == num_start {
+            return Err(FileCleanerError::InvalidDuration(input.to_string()));
+        }
+        let value: u128 = trimmed[num_start..idx]
+            .parse()
+            .map_err(|_| FileCleanerError::InvalidDuration(input.to_string()))?;
+
+        while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+            idx += 1;
+        }
+
+        let unit_start = idx;
+        while idx < bytes.len() && bytes[idx].is_ascii_alphabetic() {
+            idx += 1;
+        }
+        if idx == unit_start {
+            return Err(FileCleanerError::InvalidDuration(input.to_string()));
+        }
+
+        let unit = trimmed[unit_start..idx].to_ascii_lowercase();
+        let unit_millis: u128 = match unit.as_str() {
+            "ms" => 1,
+            "s" => 1_000,
+            "m" => 60_000,
+            "h" => 3_600_000,
+            "d" => 86_400_000,
+            "w" => 604_800_000,
+            _ => return Err(FileCleanerError::InvalidDuration(input.to_string())),
+        };
+
+        let delta = value
+            .checked_mul(unit_millis)
+            .ok_or_else(|| FileCleanerError::InvalidDuration(input.to_string()))?;
+        total_millis = total_millis
+            .checked_add(delta)
+            .ok_or_else(|| FileCleanerError::InvalidDuration(input.to_string()))?;
+        parsed_any = true;
+    }
+
+    if !parsed_any {
+        return Err(FileCleanerError::InvalidDuration(input.to_string()));
+    }
+
+    let millis_u64 = u64::try_from(total_millis)
+        .map_err(|_| FileCleanerError::InvalidDuration(input.to_string()))?;
+    Ok(Duration::from_millis(millis_u64))
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_daemon_interval() -> Duration {
+    Duration::from_secs(60)
+}
+
+fn default_debounce() -> Duration {
+    Duration::from_secs(2)
+}
+
+fn default_hook_timeout() -> Duration {
+    Duration::from_secs(30)
+}
+
+fn default_skip_exit_code() -> Option<i32> {
+    Some(42)
+}
+
+fn default_actions() -> Vec<ActionStep> {
+    vec![ActionStep::Delete]
+}
+
+fn default_sidecar_suffixes() -> Vec<String> {
+    vec![
+        ".lock".to_string(),
+        ".lck".to_string(),
+        ".part".to_string(),
+        ".tmp".to_string(),
+        ".processing".to_string(),
+    ]
+}
+
+mod serde_bytes {
+    use super::*;
+
+    pub fn serialize<S: Serializer>(val: &u64, ser: S) -> std::result::Result<S::Ok, S::Error> {
+        ser.serialize_u64(*val)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deser: D) -> std::result::Result<u64, D::Error> {
+        struct BytesVisitor;
+        impl<'de> serde::de::Visitor<'de> for BytesVisitor {
+            type Value = u64;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a non-negative integer or byte-size string such as '10 MiB'")
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> std::result::Result<u64, E> {
+                Ok(v)
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> std::result::Result<u64, E> {
+                u64::try_from(v).map_err(|_| E::custom(format!("negative byte size {v}")))
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> std::result::Result<u64, E> {
+                parse_bytes(v).map_err(E::custom)
+            }
+        }
+        deser.deserialize_any(BytesVisitor)
+    }
+}
+
+mod serde_opt_bytes {
+    use super::*;
+
+    pub fn serialize<S: Serializer>(
+        val: &Option<u64>,
+        ser: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        match val {
+            Some(v) => ser.serialize_some(v),
+            None => ser.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deser: D,
+    ) -> std::result::Result<Option<u64>, D::Error> {
+        struct OptBytesVisitor;
+        impl<'de> serde::de::Visitor<'de> for OptBytesVisitor {
+            type Value = Option<u64>;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("null, a non-negative integer, or a byte-size string")
+            }
+
+            fn visit_none<E: serde::de::Error>(self) -> std::result::Result<Self::Value, E> {
+                Ok(None)
+            }
+
+            fn visit_unit<E: serde::de::Error>(self) -> std::result::Result<Self::Value, E> {
+                Ok(None)
+            }
+
+            fn visit_some<D2: Deserializer<'de>>(
+                self,
+                deserializer: D2,
+            ) -> std::result::Result<Self::Value, D2::Error> {
+                serde_bytes::deserialize(deserializer).map(Some)
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> std::result::Result<Self::Value, E> {
+                Ok(Some(v))
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> std::result::Result<Self::Value, E> {
+                u64::try_from(v)
+                    .map(Some)
+                    .map_err(|_| E::custom(format!("negative byte size {v}")))
+            }
+
+            fn visit_str<E: serde::de::Error>(
+                self,
+                v: &str,
+            ) -> std::result::Result<Self::Value, E> {
+                parse_bytes(v).map(Some).map_err(E::custom)
+            }
+        }
+        deser.deserialize_any(OptBytesVisitor)
+    }
+}
+
+mod serde_duration {
+    use super::*;
+
+    pub fn serialize<S: Serializer>(
+        val: &Duration,
+        ser: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        if val.subsec_nanos() == 0 {
+            ser.serialize_str(&format!("{}s", val.as_secs()))
+        } else {
+            ser.serialize_str(&format!("{}ms", val.as_millis()))
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deser: D,
+    ) -> std::result::Result<Duration, D::Error> {
+        struct DurationVisitor;
+        impl<'de> serde::de::Visitor<'de> for DurationVisitor {
+            type Value = Duration;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a non-negative integer seconds or duration string such as '30d'")
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> std::result::Result<Duration, E> {
+                Ok(Duration::from_secs(v))
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> std::result::Result<Duration, E> {
+                u64::try_from(v)
+                    .map(Duration::from_secs)
+                    .map_err(|_| E::custom(format!("negative duration {v}")))
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> std::result::Result<Duration, E> {
+                parse_duration_str(v).map_err(E::custom)
+            }
+        }
+        deser.deserialize_any(DurationVisitor)
+    }
+}
+
+mod serde_opt_duration {
+    use super::*;
+
+    pub fn serialize<S: Serializer>(
+        val: &Option<Duration>,
+        ser: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        match val {
+            Some(d) => serde_duration::serialize(d, ser),
+            None => ser.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deser: D,
+    ) -> std::result::Result<Option<Duration>, D::Error> {
+        struct OptDurationVisitor;
+        impl<'de> serde::de::Visitor<'de> for OptDurationVisitor {
+            type Value = Option<Duration>;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("null, integer seconds, or a duration string such as '7d'")
+            }
+
+            fn visit_none<E: serde::de::Error>(self) -> std::result::Result<Self::Value, E> {
+                Ok(None)
+            }
+
+            fn visit_unit<E: serde::de::Error>(self) -> std::result::Result<Self::Value, E> {
+                Ok(None)
+            }
+
+            fn visit_some<D2: Deserializer<'de>>(
+                self,
+                deserializer: D2,
+            ) -> std::result::Result<Self::Value, D2::Error> {
+                serde_duration::deserialize(deserializer).map(Some)
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> std::result::Result<Self::Value, E> {
+                Ok(Some(Duration::from_secs(v)))
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> std::result::Result<Self::Value, E> {
+                u64::try_from(v)
+                    .map(|secs| Some(Duration::from_secs(secs)))
+                    .map_err(|_| E::custom(format!("negative duration {v}")))
+            }
+
+            fn visit_str<E: serde::de::Error>(
+                self,
+                v: &str,
+            ) -> std::result::Result<Self::Value, E> {
+                parse_duration_str(v).map(Some).map_err(E::custom)
+            }
+        }
+        deser.deserialize_any(OptDurationVisitor)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn minimal_rule(name: &str, path: PathBuf) -> RuleConfig {
+        RuleConfig {
+            name: name.to_string(),
+            path,
+            enabled: true,
+            recursive: false,
+            max_depth: None,
+            follow_symlinks: false,
+            include_globs: vec![],
+            exclude_globs: vec![],
+            include_regex: None,
+            exclude_regex: None,
+            min_file_size: None,
+            max_file_size: None,
+            time_basis: TimeBasis::Modified,
+            filename_date_regex: None,
+            filename_date_format: None,
+            max_files: Some(10),
+            max_age: None,
+            max_total_size: None,
+            combine_mode: CombineMode::Any,
+            eviction_order: EvictionOrder::OldestFirst,
+            dry_run: false,
+            backup_guard: BackupGuardConfig::default(),
+            in_use: InUseConfig::default(),
+            pre_delete_hook: None,
+            actions: vec![ActionStep::Delete],
+            move_to: None,
+            move_date_subdir: None,
+            move_overwrite: false,
+            trash_dir: None,
+            compression: CompressionFormat::Gzip,
+            compression_level: None,
+            compress_remove_source: true,
+            compress_overwrite: false,
+            copy_truncate_to: None,
+            rename_template: None,
+        }
+    }
+
+    #[test]
+    fn parse_bytes_supports_si_iec_and_fractions() {
+        assert_eq!(parse_bytes("0").unwrap(), 0);
+        assert_eq!(parse_bytes("512B").unwrap(), 512);
+        assert_eq!(parse_bytes("4KB").unwrap(), 4_000);
+        assert_eq!(parse_bytes("4KiB").unwrap(), 4_096);
+        assert_eq!(parse_bytes("2 MB").unwrap(), 2_000_000);
+        assert_eq!(parse_bytes("2MiB").unwrap(), 2 * 1024 * 1024);
+        assert_eq!(parse_bytes("3GB").unwrap(), 3_000_000_000);
+        assert_eq!(parse_bytes("1.5 GiB").unwrap(), 1_610_612_736);
+        assert_eq!(parse_bytes("1TB").unwrap(), 1_000_000_000_000);
+        assert_eq!(parse_bytes("1TiB").unwrap(), 1024_u64.pow(4));
+        assert!(parse_bytes("").is_err());
+        assert!(parse_bytes("-5MB").is_err());
+        assert!(parse_bytes("12XB").is_err());
+        assert!(parse_bytes("1.2.3GB").is_err());
+    }
+
+    #[test]
+    fn parse_duration_supports_single_compound_and_rejects_invalid() {
+        assert_eq!(
+            parse_duration_str("250ms").unwrap(),
+            Duration::from_millis(250)
+        );
+        assert_eq!(parse_duration_str("45s").unwrap(), Duration::from_secs(45));
+        assert_eq!(parse_duration_str("15m").unwrap(), Duration::from_secs(900));
+        assert_eq!(
+            parse_duration_str("2h").unwrap(),
+            Duration::from_secs(7_200)
+        );
+        assert_eq!(
+            parse_duration_str("7d").unwrap(),
+            Duration::from_secs(7 * 86_400)
+        );
+        assert_eq!(
+            parse_duration_str("2w").unwrap(),
+            Duration::from_secs(14 * 86_400)
+        );
+        assert_eq!(
+            parse_duration_str("1d 12h 30m").unwrap(),
+            Duration::from_secs(86_400 + 12 * 3_600 + 30 * 60)
+        );
+        assert_eq!(parse_duration_str("120").unwrap(), Duration::from_secs(120));
+        assert!(parse_duration_str("").is_err());
+        assert!(parse_duration_str("10y").is_err());
+        assert!(parse_duration_str("-5s").is_err());
+        assert!(parse_duration_str("abc").is_err());
+    }
+
+    #[test]
+    fn from_file_auto_detects_toml_and_yaml_and_rejects_unknown_ext() {
+        let tmp = TempDir::new().unwrap();
+        let scan_dir = tmp.path().join("backups");
+        fs::create_dir_all(&scan_dir).unwrap();
+
+        let toml_path = tmp.path().join("config.toml");
+        let toml_body = format!(
+            r#"
+[daemon]
+interval = "5m"
+watch = true
+
+[[rules]]
+name = "pg-backups"
+path = "{}"
+max_files = 14
+max_age = "30d"
+max_total_size = "10 GiB"
+combine_mode = "any"
+eviction_order = "oldest_first"
+actions = ["compress", "delete"]
+compression = "lz4"
+
+[rules.backup_guard]
+enabled = true
+min_keep_files = 3
+min_valid_backup_bytes = "1 MiB"
+require_newer_within = "36h"
+"#,
+            scan_dir.display().to_string().replace('\\', "\\\\")
+        );
+        fs::write(&toml_path, toml_body).unwrap();
+
+        let parsed_toml = Config::load_validated(&toml_path).unwrap();
+        assert_eq!(parsed_toml.daemon.interval, Duration::from_secs(300));
+        assert!(parsed_toml.daemon.watch);
+        assert_eq!(parsed_toml.rules.len(), 1);
+        assert_eq!(
+            parsed_toml.rules[0].max_total_size,
+            Some(10 * 1024_u64.pow(3))
+        );
+        assert_eq!(parsed_toml.rules[0].compression, CompressionFormat::Lz4);
+        assert_eq!(parsed_toml.rules[0].backup_guard.min_keep_files, 3);
+
+        let yaml_path = tmp.path().join("config.yml");
+        let yaml_body = format!(
+            r#"
+daemon:
+  interval: 2m
+rules:
+  - name: app-logs
+    path: "{}"
+    time_basis: filename_date
+    filename_date_regex: 'app-(\d{{4}}-\d{{2}}-\d{{2}})\.log'
+    filename_date_format: "%Y-%m-%d"
+    max_age: 14d
+    actions:
+      - compress
+      - trash
+    compression: brotli
+    trash_dir: "{}"
+    pre_delete_hook:
+      command: /usr/bin/true
+      timeout: 10s
+      on_failure: abort_rule
+"#,
+            scan_dir.display().to_string().replace('\\', "\\\\"),
+            tmp.path()
+                .join("trash")
+                .display()
+                .to_string()
+                .replace('\\', "\\\\")
+        );
+        fs::write(&yaml_path, yaml_body).unwrap();
+
+        let parsed_yaml = Config::load_validated(&yaml_path).unwrap();
+        assert_eq!(parsed_yaml.rules[0].time_basis, TimeBasis::FilenameDate);
+        assert_eq!(parsed_yaml.rules[0].compression, CompressionFormat::Brotli);
+        assert_eq!(
+            parsed_yaml.rules[0]
+                .pre_delete_hook
+                .as_ref()
+                .unwrap()
+                .on_failure,
+            HookFailurePolicy::AbortRule
+        );
+
+        let json_path = tmp.path().join("config.json");
+        fs::write(&json_path, "{}").unwrap();
+        assert!(matches!(
+            Config::from_file(&json_path),
+            Err(FileCleanerError::ConfigFormat { .. })
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_empty_rules_and_duplicate_names() {
+        let empty = Config::default();
+        assert!(matches!(
+            empty.validate(),
+            Err(FileCleanerError::ConfigValidation(_))
+        ));
+
+        let dup = Config {
+            rules: vec![
+                minimal_rule("dup", PathBuf::from("/tmp/a")),
+                minimal_rule("dup", PathBuf::from("/tmp/b")),
+            ],
+            ..Config::default()
+        };
+        assert!(matches!(
+            dup.validate(),
+            Err(FileCleanerError::ConfigValidation(_))
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_invalid_globs_and_regexes() {
+        let mut bad_glob = minimal_rule("bad-glob", PathBuf::from("/tmp/a"));
+        bad_glob.include_globs = vec!["[unclosed".to_string()];
+        let cfg = Config {
+            rules: vec![bad_glob],
+            ..Config::default()
+        };
+        assert!(matches!(
+            cfg.validate(),
+            Err(FileCleanerError::InvalidGlob { .. })
+        ));
+
+        let mut bad_regex = minimal_rule("bad-regex", PathBuf::from("/tmp/a"));
+        bad_regex.exclude_regex = Some("(unclosed".to_string());
+        let cfg = Config {
+            rules: vec![bad_regex],
+            ..Config::default()
+        };
+        assert!(matches!(
+            cfg.validate(),
+            Err(FileCleanerError::InvalidRegex { .. })
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_max_files_below_min_keep_files() {
+        let mut rule = minimal_rule("floor-conflict", PathBuf::from("/tmp/backups"));
+        rule.max_files = Some(2);
+        rule.backup_guard.enabled = true;
+        rule.backup_guard.min_keep_files = 5;
+
+        let cfg = Config {
+            rules: vec![rule],
+            ..Config::default()
+        };
+        assert!(matches!(
+            cfg.validate(),
+            Err(FileCleanerError::ConfigValidation(_))
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_move_to_and_trash_dir_inside_recursive_path_unless_excluded() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("logs");
+        let archive = root.join("archive");
+        let trash = root.join(".trash");
+        fs::create_dir_all(&root).unwrap();
+
+        let mut rule = minimal_rule("recursive-move", root.clone());
+        rule.recursive = true;
+        rule.actions = vec![ActionStep::Move];
+        rule.move_to = Some(archive);
+
+        let cfg = Config {
+            rules: vec![rule.clone()],
+            ..Config::default()
+        };
+        assert!(matches!(
+            cfg.validate(),
+            Err(FileCleanerError::ConfigValidation(_))
+        ));
+
+        // Excluding the destination subtree permits recursive scanning safely.
+        rule.exclude_globs = vec!["archive/**".to_string()];
+        let cfg_excluded = Config {
+            rules: vec![rule],
+            ..Config::default()
+        };
+        assert!(cfg_excluded.validate().is_ok());
+
+        // Same enforcement for trash_dir inside recursive rule path.
+        let mut trash_rule = minimal_rule("recursive-trash", root.clone());
+        trash_rule.recursive = true;
+        trash_rule.actions = vec![ActionStep::Trash];
+        trash_rule.trash_dir = Some(trash);
+
+        let cfg_trash_bad = Config {
+            rules: vec![trash_rule.clone()],
+            ..Config::default()
+        };
+        assert!(matches!(
+            cfg_trash_bad.validate(),
+            Err(FileCleanerError::ConfigValidation(_))
+        ));
+
+        trash_rule.exclude_globs = vec![".trash".to_string()];
+        let cfg_trash_ok = Config {
+            rules: vec![trash_rule],
+            ..Config::default()
+        };
+        assert!(cfg_trash_ok.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_missing_action_destinations_and_invalid_hooks_or_filename_date() {
+        let mut missing_move = minimal_rule("missing-move", PathBuf::from("/tmp/a"));
+        missing_move.actions = vec![ActionStep::Move];
+        let cfg_move = Config {
+            rules: vec![missing_move],
+            ..Config::default()
+        };
+        assert!(matches!(
+            cfg_move.validate(),
+            Err(FileCleanerError::ConfigValidation(_))
+        ));
+
+        let mut missing_trash = minimal_rule("missing-trash", PathBuf::from("/tmp/a"));
+        missing_trash.actions = vec![ActionStep::Trash];
+        let cfg_trash = Config {
+            rules: vec![missing_trash],
+            ..Config::default()
+        };
+        assert!(matches!(
+            cfg_trash.validate(),
+            Err(FileCleanerError::ConfigValidation(_))
+        ));
+
+        let mut missing_fn_date = minimal_rule("missing-fn-date", PathBuf::from("/tmp/a"));
+        missing_fn_date.time_basis = TimeBasis::FilenameDate;
+        let cfg_fn = Config {
+            rules: vec![missing_fn_date],
+            ..Config::default()
+        };
+        assert!(matches!(
+            cfg_fn.validate(),
+            Err(FileCleanerError::ConfigValidation(_))
+        ));
+
+        let mut bad_hook = minimal_rule("bad-hook", PathBuf::from("/tmp/a"));
+        bad_hook.pre_delete_hook = Some(HookConfig {
+            command: "   ".to_string(),
+            args: vec![],
+            timeout: Duration::from_secs(5),
+            on_failure: HookFailurePolicy::AbortFile,
+            skip_exit_code: Some(42),
+            run_in_dry_run: false,
+            working_dir: None,
+            env: BTreeMap::new(),
+        });
+        let cfg_hook = Config {
+            rules: vec![bad_hook],
+            ..Config::default()
+        };
+        assert!(matches!(
+            cfg_hook.validate(),
+            Err(FileCleanerError::ConfigValidation(_))
+        ));
+
+        let mut zero_timeout_hook = minimal_rule("zero-timeout", PathBuf::from("/tmp/a"));
+        zero_timeout_hook.pre_delete_hook = Some(HookConfig {
+            command: "/bin/true".to_string(),
+            args: vec![],
+            timeout: Duration::ZERO,
+            on_failure: HookFailurePolicy::AbortFile,
+            skip_exit_code: Some(42),
+            run_in_dry_run: false,
+            working_dir: None,
+            env: BTreeMap::new(),
+        });
+        assert!(Config {
+            rules: vec![zero_timeout_hook],
+            ..Config::default()
+        }
+        .validate()
+        .is_err());
+
+        let mut bad_fmt = minimal_rule("bad-strftime", PathBuf::from("/tmp/a"));
+        bad_fmt.time_basis = TimeBasis::FilenameDate;
+        bad_fmt.filename_date_regex = Some(r"(\d{4})".to_string());
+        bad_fmt.filename_date_format = Some("%Q".to_string());
+        assert!(Config {
+            rules: vec![bad_fmt],
+            ..Config::default()
+        }
+        .validate()
+        .is_err());
+
+        let mut empty_actions = minimal_rule("empty-actions", PathBuf::from("/tmp/a"));
+        empty_actions.actions = vec![];
+        assert!(Config {
+            rules: vec![empty_actions],
+            ..Config::default()
+        }
+        .validate()
+        .is_err());
+
+        let empty_name = minimal_rule("   ", PathBuf::from("/tmp/a"));
+        assert!(Config {
+            rules: vec![empty_name],
+            ..Config::default()
+        }
+        .validate()
+        .is_err());
+
+        let empty_path = minimal_rule("empty-path", PathBuf::new());
+        assert!(Config {
+            rules: vec![empty_path],
+            ..Config::default()
+        }
+        .validate()
+        .is_err());
+    }
+
+    #[test]
+    fn serde_round_trip_and_numeric_variants_and_overflow_checks() {
+        let mut rule = minimal_rule("roundtrip", PathBuf::from("/tmp/logs"));
+        rule.min_file_size = Some(64);
+        rule.max_file_size = Some(8192);
+        rule.max_age = Some(Duration::from_millis(1500));
+        rule.max_total_size = Some(4096);
+        rule.backup_guard.min_valid_backup_bytes = 512;
+        rule.backup_guard.require_newer_within = Some(Duration::from_secs(3600));
+        rule.backup_guard.freeze_if_newest_older_than = Some(
+            chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+        );
+        rule.actions = vec![
+            ActionStep::RenameByDate,
+            ActionStep::Compress,
+            ActionStep::CopyTruncate,
+            ActionStep::Delete,
+        ];
+        rule.copy_truncate_to = Some(PathBuf::from("/tmp/rotated"));
+        rule.move_date_subdir = Some("%Y/%m".to_string());
+        rule.compression = CompressionFormat::Zip;
+        rule.combine_mode = CombineMode::All;
+        rule.eviction_order = EvictionOrder::LargestFirst;
+
+        let cfg = Config {
+            dry_run: true,
+            audit_log: Some(PathBuf::from("/tmp/audit.jsonl")),
+            global_trash_dir: Some(PathBuf::from("/tmp/trash")),
+            rules: vec![rule],
+            ..Config::default()
+        };
+
+        let yaml_text = serde_yaml_ng::to_string(&cfg).unwrap();
+        let yaml_back: Config = serde_yaml_ng::from_str(&yaml_text).unwrap();
+        assert_eq!(yaml_back, cfg);
+
+        let toml_text = toml::to_string(&cfg).unwrap();
+        let toml_back: Config = toml::from_str(&toml_text).unwrap();
+        assert_eq!(toml_back, cfg);
+        assert_eq!(
+            toml_back.effective_audit_log(),
+            Some(Path::new("/tmp/audit.jsonl"))
+        );
+
+        // Numeric integer and null YAML forms exercise visitor branches.
+        let numeric_yaml = r#"
+daemon:
+  interval: 45
+  debounce: 3
+rules:
+  - name: numeric-rule
+    path: /tmp/numeric
+    max_age: null
+    max_total_size: 2048
+    backup_guard:
+      min_valid_backup_bytes: 128
+      require_newer_within: 120
+"#;
+        let numeric_cfg: Config = serde_yaml_ng::from_str(numeric_yaml).unwrap();
+        assert_eq!(numeric_cfg.daemon.interval, Duration::from_secs(45));
+        assert_eq!(numeric_cfg.rules[0].max_age, None);
+        assert_eq!(numeric_cfg.rules[0].max_total_size, Some(2048));
+        assert_eq!(
+            numeric_cfg.rules[0].backup_guard.min_valid_backup_bytes,
+            128
+        );
+        assert_eq!(
+            numeric_cfg.rules[0].backup_guard.require_newer_within,
+            Some(Duration::from_secs(120))
+        );
+
+        let negative_bytes_yaml = r#"
+rules:
+  - name: neg-bytes
+    path: /tmp/neg
+    max_total_size: -1
+"#;
+        assert!(serde_yaml_ng::from_str::<Config>(negative_bytes_yaml).is_err());
+
+        let negative_duration_yaml = r#"
+rules:
+  - name: neg-dur
+    path: /tmp/neg
+    max_age: -5
+"#;
+        assert!(serde_yaml_ng::from_str::<Config>(negative_duration_yaml).is_err());
+
+        assert!(parse_bytes("99999999999999999999999999999 GiB").is_err());
+        assert!(parse_duration_str("9999999999999999999999999 w").is_err());
+    }
+
+    #[test]
+    fn validate_and_parser_error_branches_cover_edge_cases() {
+        let tmp = TempDir::new().unwrap();
+        let bad_toml = tmp.path().join("bad.toml");
+        fs::write(&bad_toml, "rules = [not valid").unwrap();
+        assert!(matches!(
+            Config::from_file(&bad_toml),
+            Err(FileCleanerError::ConfigParse { .. })
+        ));
+
+        let bad_yaml = tmp.path().join("bad.yaml");
+        fs::write(&bad_yaml, "rules:\n  - [broken").unwrap();
+        assert!(matches!(
+            Config::from_file(&bad_yaml),
+            Err(FileCleanerError::ConfigParse { .. })
+        ));
+
+        // Invalid type errors exercise serde `expecting()` branches.
+        assert!(serde_yaml_ng::from_str::<Config>(
+            "rules:\n  - name: t\n    path: /tmp\n    max_total_size: [1, 2]\n"
+        )
+        .is_err());
+        assert!(serde_yaml_ng::from_str::<Config>(
+            "rules:\n  - name: t\n    path: /tmp\n    max_age: [1, 2]\n"
+        )
+        .is_err());
+        assert!(serde_yaml_ng::from_str::<Config>(
+            "daemon:\n  interval: [1, 2]\nrules:\n  - name: t\n    path: /tmp\n"
+        )
+        .is_err());
+        assert!(serde_yaml_ng::from_str::<Config>(
+            "rules:\n  - name: t\n    path: /tmp\n    backup_guard:\n      min_valid_backup_bytes: -1\n"
+        )
+        .is_err());
+        assert!(serde_yaml_ng::from_str::<Config>(
+            "daemon:\n  interval: -5\nrules:\n  - name: t\n    path: /tmp\n"
+        )
+        .is_err());
+
+        // Empty global_trash_dir, invalid exclude_glob, include_regex, filename_date_regex,
+        // move_to == recursive root, and exclude_regex exclusion.
+        let mut base = minimal_rule("edge", tmp.path().join("root"));
+        fs::create_dir_all(&base.path).unwrap();
+
+        let empty_global = Config {
+            global_trash_dir: Some(PathBuf::new()),
+            rules: vec![base.clone()],
+            ..Config::default()
+        };
+        assert!(empty_global.validate().is_err());
+
+        let mut bad_ex_glob = base.clone();
+        bad_ex_glob.exclude_globs = vec!["[bad".to_string()];
+        assert!(matches!(
+            Config {
+                rules: vec![bad_ex_glob],
+                ..Config::default()
+            }
+            .validate(),
+            Err(FileCleanerError::InvalidGlob { .. })
+        ));
+
+        let mut bad_inc_re = base.clone();
+        bad_inc_re.include_regex = Some("(bad".to_string());
+        assert!(matches!(
+            Config {
+                rules: vec![bad_inc_re],
+                ..Config::default()
+            }
+            .validate(),
+            Err(FileCleanerError::InvalidRegex { .. })
+        ));
+
+        let mut bad_fn_re = base.clone();
+        bad_fn_re.time_basis = TimeBasis::FilenameDate;
+        bad_fn_re.filename_date_regex = Some("(bad".to_string());
+        bad_fn_re.filename_date_format = Some("%Y".to_string());
+        assert!(matches!(
+            Config {
+                rules: vec![bad_fn_re],
+                ..Config::default()
+            }
+            .validate(),
+            Err(FileCleanerError::InvalidRegex { .. })
+        ));
+
+        let mut same_dest = base.clone();
+        same_dest.recursive = true;
+        same_dest.actions = vec![ActionStep::Move];
+        same_dest.move_to = Some(same_dest.path.clone());
+        assert!(Config {
+            rules: vec![same_dest],
+            ..Config::default()
+        }
+        .validate()
+        .is_err());
+
+        // Relative path normalization + exclude_regex acceptance.
+        base.recursive = true;
+        base.actions = vec![ActionStep::Move];
+        base.move_to = Some(base.path.join("subdir/../cold"));
+        base.exclude_regex = Some("^cold(/|$)".to_string());
+        assert!(Config {
+            rules: vec![base],
+            ..Config::default()
+        }
+        .validate()
+        .is_ok());
+
+        // Global trash dir inside recursive path without exclusion should fail, too.
+        let mut uses_global_trash = minimal_rule("global-trash", tmp.path().join("root"));
+        uses_global_trash.recursive = true;
+        uses_global_trash.actions = vec![ActionStep::Trash];
+        assert!(Config {
+            global_trash_dir: Some(tmp.path().join("root/nested_trash")),
+            rules: vec![uses_global_trash],
+            ..Config::default()
+        }
+        .validate()
+        .is_err());
+    }
+
+    #[test]
+    fn spec_alignment_aliases_and_new_validation_invariants() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("logs");
+        let rotated = tmp.path().join("rotated");
+        fs::create_dir_all(&root).unwrap();
+
+        let alias_toml = format!(
+            r#"
+dry_run = true
+audit_log = "/var/log/filecleaner/audit.jsonl"
+
+[daemon]
+mode = "notify"
+poll_interval = "90s"
+sweep_on_start = false
+
+[[rules]]
+name = "nginx-logs"
+path = "{}"
+min_file_size = "1 KiB"
+max_file_size = "50 MiB"
+actions = ["compress", "move"]
+compression = "gzip"
+compress_remove_source = false
+compress_overwrite = true
+move_to = "{}"
+move_date_subdir = "%Y/%m"
+move_overwrite = true
+
+[rules.backup_guard]
+enabled = true
+min_keep_files = 2
+min_valid_size = "512 B"
+max_newest_age = "12h"
+min_newest_timestamp = "2026-01-01T00:00:00Z"
+freeze_on_empty = false
+
+[rules.pre_hook]
+command = "/usr/bin/true"
+run_in_dry_run = true
+"#,
+            root.display().to_string().replace('\\', "\\\\"),
+            rotated.display().to_string().replace('\\', "\\\\")
+        );
+
+        let parsed: Config = toml::from_str(&alias_toml).unwrap();
+        parsed.validate().unwrap();
+        assert!(parsed.dry_run);
+        assert_eq!(parsed.daemon.mode, DaemonMode::Notify);
+        assert_eq!(parsed.daemon.interval, Duration::from_secs(90));
+        assert!(!parsed.daemon.sweep_on_start);
+        assert_eq!(parsed.rules[0].min_file_size, Some(1024));
+        assert_eq!(parsed.rules[0].max_file_size, Some(50 * 1024 * 1024));
+        assert!(!parsed.rules[0].compress_remove_source);
+        assert!(parsed.rules[0].compress_overwrite);
+        assert!(parsed.rules[0].move_overwrite);
+        assert_eq!(parsed.rules[0].move_date_subdir.as_deref(), Some("%Y/%m"));
+        assert_eq!(parsed.rules[0].backup_guard.min_valid_backup_bytes, 512);
+        assert_eq!(
+            parsed.rules[0].backup_guard.require_newer_within,
+            Some(Duration::from_secs(12 * 3600))
+        );
+        assert!(parsed.rules[0]
+            .backup_guard
+            .freeze_if_newest_older_than
+            .is_some());
+        assert!(!parsed.rules[0].backup_guard.freeze_on_empty_valid);
+        assert!(
+            parsed.rules[0]
+                .pre_delete_hook
+                .as_ref()
+                .unwrap()
+                .run_in_dry_run
+        );
+
+        // min_file_size > max_file_size rejected.
+        let mut size_conflict = minimal_rule("size-conflict", root.clone());
+        size_conflict.min_file_size = Some(2048);
+        size_conflict.max_file_size = Some(1024);
+        assert!(Config {
+            rules: vec![size_conflict],
+            ..Config::default()
+        }
+        .validate()
+        .is_err());
+
+        // CopyTruncate requires copy_truncate_to or move_to and forbids unexcluded recursive nesting.
+        let mut missing_ct = minimal_rule("missing-ct", root.clone());
+        missing_ct.actions = vec![ActionStep::CopyTruncate];
+        assert!(Config {
+            rules: vec![missing_ct],
+            ..Config::default()
+        }
+        .validate()
+        .is_err());
+
+        let mut nested_ct = minimal_rule("nested-ct", root.clone());
+        nested_ct.recursive = true;
+        nested_ct.actions = vec![ActionStep::CopyTruncate];
+        nested_ct.copy_truncate_to = Some(root.join("inner"));
+        assert!(Config {
+            rules: vec![nested_ct],
+            ..Config::default()
+        }
+        .validate()
+        .is_err());
+
+        // Terminal Delete/Trash cannot precede another step.
+        let mut bad_pipeline = minimal_rule("bad-pipeline", root.clone());
+        bad_pipeline.actions = vec![ActionStep::Delete, ActionStep::Compress];
+        assert!(Config {
+            rules: vec![bad_pipeline],
+            ..Config::default()
+        }
+        .validate()
+        .is_err());
+
+        let mut bad_trash_pipeline = minimal_rule("bad-trash-pipeline", root.clone());
+        bad_trash_pipeline.trash_dir = Some(rotated.clone());
+        bad_trash_pipeline.actions = vec![ActionStep::Trash, ActionStep::Move];
+        bad_trash_pipeline.move_to = Some(rotated);
+        assert!(Config {
+            rules: vec![bad_trash_pipeline],
+            ..Config::default()
+        }
+        .validate()
+        .is_err());
+
+        // Invalid move_date_subdir rejected.
+        let mut bad_subdir = minimal_rule("bad-subdir", root.clone());
+        bad_subdir.move_date_subdir = Some("%Q".to_string());
+        assert!(Config {
+            rules: vec![bad_subdir],
+            ..Config::default()
+        }
+        .validate()
+        .is_err());
+
+        // Zero daemon interval rejected.
+        let mut zero_daemon = Config {
+            rules: vec![minimal_rule("ok", root)],
+            ..Config::default()
+        };
+        zero_daemon.daemon.interval = Duration::ZERO;
+        assert!(zero_daemon.validate().is_err());
+    }
+}
