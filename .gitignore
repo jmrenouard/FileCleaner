@@ -29,3 +29,4 @@ Thumbs.db
 
 # Agent teamwork metadata
 .agents/teamwork/
+/.worktrees/

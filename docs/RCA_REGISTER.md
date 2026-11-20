@@ -35,6 +35,15 @@
 
 ---
 
+### IMP-003 — Swarm `workspace:"share"` VCS Unknown Status vs. Explicit `git worktree` `.worktrees/<role>` Isolation
+- **Context**: Coordinating parallel Wave 2 development across core retention (`Issue #7`), actions/hooks (`Issue #8`), and bilingual documentation (`docs/bilingual-guides-draft`) inside a single Dropbox-synced Git repository on Windows.
+- **Why It Is a Dead-End**:
+  - Spawning swarm workers with `workspace:"share"` on Windows inside a Dropbox-synced folder risks exposing an `Unknown` or unlinked VCS state to workers without deterministic branch provenance, complicates Windows/WSL2 path mapping, and breaks clean `git -C` integration from the root controller.
+- **Adopted Decision**:
+  - Explicitly excluded `/.worktrees/` in `.git/info/exclude` (and `.gitignore`) and provisioned dedicated `git worktree` directories (`.worktrees/core`, `.worktrees/actions`, `.worktrees/docs`, `.worktrees/daemon`) anchored directly to `main`, giving each author an isolated branch and filesystem checkout while `@devops` owns all `git`/`gh` staging, merging, and worktree cleanup from Windows PowerShell.
+
+---
+
 ## 3. Current Approximations & Simplifying Assumptions (`APP`)
 
 ### APP-001 — Unix Advisory `flock` + Linux `/proc/*/fd` vs. Windows `share_mode(0)` File-Lock Detection Semantics
