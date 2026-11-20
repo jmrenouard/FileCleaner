@@ -372,3 +372,158 @@ fn stability_window_detects_mtime_only_touch_without_size_change() {
         .iter()
         .any(|r| matches!(r, InUseReason::SizeOrMtimeChanged)));
 }
+
+#[test]
+fn non_intrusive_probe_order_skips_os_lock_when_sidecar_or_idle_age_triggers() {
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct CountingProbe {
+        os_lock_calls: Mutex<Vec<PathBuf>>,
+    }
+
+    impl LockProbe for CountingProbe {
+        fn check_os_lock(&self, path: &Path) -> Result<Option<InUseReason>, String> {
+            self.os_lock_calls.lock().unwrap().push(path.to_path_buf());
+            Ok(None)
+        }
+
+        fn check_proc_fd(&self, _path: &Path) -> ProcFdProbeOutcome {
+            ProcFdProbeOutcome::default()
+        }
+    }
+
+    let tmp = TempDir::new().unwrap();
+    let now = Utc.with_ymd_and_hms(2026, 11, 20, 12, 0, 0).unwrap();
+
+    let f_sidecar = tmp.path().join("sidecar.sql");
+    let f_sidecar_lock = tmp.path().join("sidecar.sql.lock");
+    let f_recent = tmp.path().join("recent.sql");
+    let f_idle = tmp.path().join("idle.sql");
+
+    for p in [&f_sidecar, &f_sidecar_lock, &f_recent, &f_idle] {
+        fs::write(p, b"payload").unwrap();
+    }
+    set_mtime_unix(&f_sidecar, now.timestamp() - 600);
+    set_mtime_unix(&f_recent, now.timestamp() - 5);
+    set_mtime_unix(&f_idle, now.timestamp() - 600);
+
+    let files = vec![
+        make_scanned_from_disk(&f_sidecar),
+        make_scanned_from_disk(&f_recent),
+        make_scanned_from_disk(&f_idle),
+    ];
+
+    let cfg = InUseConfig {
+        check_sidecar_locks: true,
+        check_os_locks: true,
+        check_proc_fd: false,
+        min_idle_age: Some(Duration::from_secs(30)),
+        stability_window: None,
+        ..InUseConfig::default()
+    };
+
+    let probe = CountingProbe::default();
+    let res = InUseDetector::check_batch(&files, &cfg, &FixedClock(now), &probe);
+    assert!(res.is_busy(&f_sidecar));
+    assert!(res.is_busy(&f_recent));
+    assert!(!res.is_busy(&f_idle));
+    assert_eq!(*probe.os_lock_calls.lock().unwrap(), vec![f_idle]);
+}
+
+#[cfg(unix)]
+#[test]
+fn unix_readonly_flock_probe_allows_shared_readers_and_blocks_exclusive_writers() {
+    use std::os::unix::io::AsRawFd;
+
+    let tmp = TempDir::new().unwrap();
+    let target = tmp.path().join("shared_vs_exclusive.sql");
+    fs::write(&target, b"dump").unwrap();
+
+    let holder = OpenOptions::new().read(true).open(&target).unwrap();
+
+    // Shared reader lock: read-only probe does NOT contend, while exclusive probe does.
+    let rc_sh = unsafe { libc::flock(holder.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) };
+    assert_eq!(rc_sh, 0);
+    assert_eq!(OsLockProbe.check_os_lock_readonly(&target).unwrap(), None);
+    assert_eq!(
+        OsLockProbe.check_os_lock(&target).unwrap(),
+        Some(InUseReason::OsFlock)
+    );
+
+    // Exclusive writer lock: both read-only and exclusive probes report OsFlock.
+    let rc_ex = unsafe { libc::flock(holder.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    assert_eq!(rc_ex, 0);
+    assert_eq!(
+        OsLockProbe.check_os_lock_readonly(&target).unwrap(),
+        Some(InUseReason::OsFlock)
+    );
+    assert_eq!(
+        OsLockProbe.check_os_lock(&target).unwrap(),
+        Some(InUseReason::OsFlock)
+    );
+
+    let _ = unsafe { libc::flock(holder.as_raw_fd(), libc::LOCK_UN) };
+}
+
+#[test]
+fn check_paths_batches_five_files_with_single_stability_sleep_and_preserves_order() {
+    let tmp = TempDir::new().unwrap();
+    let safe_a = tmp.path().join("safe_a.log");
+    let growing = tmp.path().join("growing.log");
+    let sidecar = tmp.path().join("sidecar.log");
+    let sidecar_lock = tmp.path().join("sidecar.log.lock");
+    let safe_b = tmp.path().join("safe_b.log");
+    let missing = tmp.path().join("missing.log");
+
+    for p in [&safe_a, &growing, &sidecar, &sidecar_lock, &safe_b] {
+        fs::write(p, b"steady").unwrap();
+    }
+
+    let growing_bg = growing.clone();
+    let writer = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(35));
+        let mut f = OpenOptions::new().append(true).open(&growing_bg).unwrap();
+        use std::io::Write;
+        f.write_all(b"-append").unwrap();
+        f.sync_all().unwrap();
+    });
+
+    let cfg = InUseConfig {
+        check_sidecar_locks: true,
+        check_os_locks: false,
+        check_proc_fd: false,
+        min_idle_age: None,
+        stability_window: Some(Duration::from_millis(150)),
+        ..InUseConfig::default()
+    };
+
+    let paths = vec![
+        safe_a.clone(),
+        growing.clone(),
+        sidecar.clone(),
+        missing.clone(),
+        safe_b.clone(),
+    ];
+
+    let started = Instant::now();
+    let reports = InUseDetector::check_paths(&paths, &cfg);
+    let elapsed = started.elapsed();
+    writer.join().unwrap();
+
+    assert!(
+        elapsed < Duration::from_millis(550),
+        "expected single batched stability sleep (< 550ms), elapsed: {elapsed:?}"
+    );
+    assert_eq!(reports.len(), 5);
+    assert_eq!(reports[0].path, safe_a);
+    assert!(!reports[0].is_busy);
+    assert_eq!(reports[1].path, growing);
+    assert!(reports[1].is_busy);
+    assert_eq!(reports[2].path, sidecar);
+    assert!(reports[2].is_busy);
+    assert_eq!(reports[3].path, missing);
+    assert!(reports[3].is_busy);
+    assert_eq!(reports[4].path, safe_b);
+    assert!(!reports[4].is_busy);
+}

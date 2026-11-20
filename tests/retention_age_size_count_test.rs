@@ -316,3 +316,104 @@ fn scanner_skips_symlinks_by_default_and_detects_loops_when_enabled() {
     let loop_res = Scanner::scan_rule(&rule, None, &DaemonConfig::default());
     assert!(matches!(loop_res, Err(FileCleanerError::Io { .. })));
 }
+
+#[test]
+fn retention_inplace_actions_keep_accurate_counts_and_copy_truncate_reclaims_bytes() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().join("inplace");
+    let rotated = tmp.path().join("rotated");
+    fs::create_dir_all(&root).unwrap();
+
+    let now = Utc.with_ymd_and_hms(2026, 11, 20, 12, 0, 0).unwrap();
+    let now_s = now.timestamp();
+    for i in 1..=5 {
+        write_sized_with_age(&root, &format!("app_{i}.log"), 100, now_s, i * 600);
+    }
+
+    let scan = Scanner::scan_rule(
+        &make_rule("scan-seed", root.clone()),
+        None,
+        &DaemonConfig::default(),
+    )
+    .unwrap();
+    assert_eq!(scan.files.len(), 5);
+
+    // 1. RenameByDate does not remove files or reclaim bytes -> Constrained when caps exceeded.
+    let mut rename_rule = make_rule("rename-cap", root.clone());
+    rename_rule.actions = vec![ActionStep::RenameByDate];
+    rename_rule.max_files = Some(2);
+    rename_rule.max_total_size = Some(200);
+    let rename_plan = RetentionEngine::plan(
+        &rename_rule,
+        &scan,
+        &InUseBatchResult::default(),
+        &FixedClock(now),
+    );
+    assert_eq!(rename_plan.remaining_files, 5);
+    assert_eq!(rename_plan.remaining_bytes, 500);
+    assert_eq!(rename_plan.evict_files.len(), 5);
+    assert_eq!(rename_plan.outcome, RuleOutcome::Constrained);
+
+    // 2. Compress (both remove_source=false and remove_source=true) preserves file count & byte
+    //    accounting until post-compress sweep, signaling Constrained when caps remain exceeded.
+    for remove_source in [false, true] {
+        let mut comp_rule = make_rule("compress-cap", root.clone());
+        comp_rule.actions = vec![ActionStep::Compress];
+        comp_rule.compress_remove_source = remove_source;
+        comp_rule.max_files = Some(2);
+        comp_rule.max_total_size = Some(200);
+        let comp_plan = RetentionEngine::plan(
+            &comp_rule,
+            &scan,
+            &InUseBatchResult::default(),
+            &FixedClock(now),
+        );
+        assert_eq!(comp_plan.remaining_files, 5);
+        assert_eq!(comp_plan.remaining_bytes, 500);
+        assert_eq!(comp_plan.evict_files.len(), 5);
+        assert_eq!(comp_plan.outcome, RuleOutcome::Constrained);
+    }
+
+    // 3. CopyTruncate reclaims bytes (so max_total_size=250 evicts 3 -> 200B, Ok), while
+    //    remaining_files stays 5 unless min_file_size > 0 filters out truncated 0B files.
+    let mut ct_size = make_rule("ct-size", root.clone());
+    ct_size.actions = vec![ActionStep::CopyTruncate];
+    ct_size.copy_truncate_to = Some(rotated.clone());
+    ct_size.max_total_size = Some(250);
+    let ct_size_plan = RetentionEngine::plan(
+        &ct_size,
+        &scan,
+        &InUseBatchResult::default(),
+        &FixedClock(now),
+    );
+    assert_eq!(ct_size_plan.evict_files.len(), 3);
+    assert_eq!(ct_size_plan.remaining_bytes, 200);
+    assert_eq!(ct_size_plan.remaining_files, 5);
+    assert_eq!(ct_size_plan.outcome, RuleOutcome::Ok);
+
+    let mut ct_count_unfiltered = ct_size.clone();
+    ct_count_unfiltered.max_files = Some(2);
+    let ct_unfiltered_plan = RetentionEngine::plan(
+        &ct_count_unfiltered,
+        &scan,
+        &InUseBatchResult::default(),
+        &FixedClock(now),
+    );
+    assert_eq!(ct_unfiltered_plan.remaining_bytes, 0);
+    assert_eq!(ct_unfiltered_plan.remaining_files, 5);
+    assert_eq!(ct_unfiltered_plan.outcome, RuleOutcome::Constrained);
+
+    let mut ct_count_filtered = ct_count_unfiltered;
+    ct_count_filtered.min_file_size = Some(1);
+    ct_count_filtered.max_total_size = None;
+    let ct_filtered_plan = RetentionEngine::plan(
+        &ct_count_filtered,
+        &scan,
+        &InUseBatchResult::default(),
+        &FixedClock(now),
+    );
+    assert_eq!(ct_filtered_plan.evict_files.len(), 3);
+    assert_eq!(ct_filtered_plan.remaining_files, 2);
+    assert_eq!(ct_filtered_plan.remaining_bytes, 200);
+    assert_eq!(ct_filtered_plan.outcome, RuleOutcome::Ok);
+}

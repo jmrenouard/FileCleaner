@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ---
 
+## [Unreleased]
+
+### Security
+
+- **Symlink-Swap TOCTOU Hardening & Private Staging (`src/actions.rs`, `src/engine.rs`)**: Added non-following regular-file opens (`O_NOFOLLOW` plus `(st_dev, st_ino)` verification on Unix; `FILE_FLAG_OPEN_REPARSE_POINT` plus reparse-point attribute validation on Windows), `0o600` private `.fc-tmp` staging creation, `copy_truncate` pre/post inode continuity checks, and pre-execute symlink verification before running live action pipelines.
+- **Private `0o600` Runtime Files & Audit Rotation (`src/audit.rs`, `src/daemon.rs`, `src/cli.rs`, `src/scanner.rs`)**: Enforced `0o600` Unix permissions on `audit.jsonl`, `pid_file`, `state_file`, `stop_file`, and `filecleaner init` outputs, plus `50 MiB` single-generation `<audit_log>.1` audit log rotation (`DEFAULT_AUDIT_ROTATE_BYTES`) with `.1` excluded from candidate scanning and daemon watching.
+- **Hook Isolation & Pipe Deadlock Prevention (`src/hooks.rs`)**: Switched hook child `stdout` to `Stdio::null()`, capped captured `stderr` at `64 KiB` via a bounded `sync_channel` with `50 ms` drain grace (preventing background grandchildren from deadlocking pipe EOF), isolated Unix children in `process_group(0)`, and terminated full process groups on timeout (`SIGKILL`).
+- **Daemon `stop` PID Identity Guard (`src/daemon.rs`)**: Verified that any live PID referenced by `pid_file` belongs to a `filecleaner` process (`is_filecleaner_process` via `/proc` on Linux, `ps` on non-Linux Unix, or `QueryFullProcessImageNameW` on Windows) before writing `stop_file` or sending `SIGTERM`.
+- **GitHub Actions Supply-Chain Hardening (`.github/workflows/ci.yml`, `.github/workflows/release.yml`)**: Pinned every `uses:` action to an immutable 40-character commit SHA, moved `${{ ... }}` matrix/ref values into `env:` out of `run:` scripts, and restricted `contents: write` strictly to `publish-release`.
+
+### Fixed
+
+- **Idempotent Multi-Sweep `Compress` & `RenameByDate` (`src/actions.rs`, `src/scanner.rs`)**: Prevented repeated daemon sweeps from looping into `_date_date` or `.gz.gz` on rules without terminal removal steps (`has_compressed_extension`, `has_trailing_date_stamp`).
+- **Accurate Quota Accounting for In-Place Actions (`src/policy.rs`)**: Distinguished file-removing (`Delete`, `Trash`, `Move`, `CopyTruncate` with `min_file_size > 0`) and byte-reclaiming actions in `RetentionEngine::plan` so `remaining_files`, `remaining_bytes`, and `RuleOutcome::Constrained` remain exact for `RenameByDate`, `Compress` (`compress_remove_source = false`), and `CopyTruncate`.
+
+### Performance
+
+- **Non-Intrusive & Read-Only In-Use Probing (`src/in_use.rs`, `src/engine.rs`, `src/cli.rs`)**: Used non-exclusive `LOCK_SH | LOCK_NB` / `FILE_SHARE_READ` lock probing during dry-run/`plan`, evaluated sidecars, `/proc/*/fd`, and `min_idle_age` + protected floor $P_{\text{floor}}$ prior to OS lock probes, cached `/proc` inode snapshots once per sweep via `SweepLockProbe` (removing redundant `read_link` calls), batched `filecleaner check-in-use <PATH...>` via `InUseDetector::check_paths`, precompiled rule regex/glob matchers once per sweep/daemon run (`CompiledRuleMatchers`), and reduced daemon `STOP_POLL_SLICE` to `200 ms`.
+
+### Changed
+
+- **Lean Code Deduplication (`src/config.rs`, `src/scanner.rs`, `src/daemon.rs`, `src/cli.rs`)**: Unified lexical path normalization on `crate::config::resolve_path_lexically`, consolidated rule matcher compilation in `compile_rule_matchers`, and reused `daemon::write_atomic_bytes_with_mode` from `cli.rs` with zero new `Cargo.toml` dependencies.
+
+---
+
 ## [1.0.0] - 2026-11-20
 
 ### Added

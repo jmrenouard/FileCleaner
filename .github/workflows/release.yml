@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -68,43 +68,59 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install stable Rust toolchain for ${{ matrix.target }}
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           targets: ${{ matrix.target }}
 
       - name: Cache Cargo registry and target artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: ${{ matrix.target }}
 
       - name: Install Zig for cross-compilation
         if: matrix.zigbuild
-        uses: mlugg/setup-zig@v2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
 
       - name: Install cargo-zigbuild
         if: matrix.zigbuild
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2
         with:
           tool: cargo-zigbuild
 
       - name: Build release binary with cargo-zigbuild
         if: matrix.zigbuild
-        run: cargo zigbuild --release --target ${{ matrix.target }}
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo zigbuild --release --target "${TARGET}"
 
-      - name: Build release binary natively
-        if: ${{ !matrix.zigbuild }}
-        run: cargo build --release --target ${{ matrix.target }}
+      - name: Build release binary natively (Unix)
+        if: ${{ !matrix.zigbuild && matrix.os != 'windows-latest' }}
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo build --release --target "${TARGET}"
+
+      - name: Build release binary natively (Windows)
+        if: ${{ !matrix.zigbuild && matrix.os == 'windows-latest' }}
+        shell: pwsh
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo build --release --target "$env:TARGET"
 
       - name: Package Unix release archive
         if: matrix.archive == 'tar.gz'
         shell: bash
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+          BIN_NAME: ${{ matrix.bin }}
         run: |
-          STAGE="filecleaner-${{ github.ref_name }}-${{ matrix.target }}"
+          STAGE="filecleaner-${REF_NAME}-${TARGET}"
           mkdir -p "dist/${STAGE}"
-          cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "dist/${STAGE}/"
+          cp "target/${TARGET}/release/${BIN_NAME}" "dist/${STAGE}/"
           cp README.md README.fr.md LICENSE "dist/${STAGE}/"
           tar -C dist -czf "dist/${STAGE}.tar.gz" "${STAGE}"
           rm -rf "dist/${STAGE}"
@@ -112,16 +128,20 @@ jobs:
       - name: Package Windows release archive
         if: matrix.archive == 'zip'
         shell: pwsh
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+          BIN_NAME: ${{ matrix.bin }}
         run: |
-          $stage = "filecleaner-${{ github.ref_name }}-${{ matrix.target }}"
+          $stage = "filecleaner-$($env:REF_NAME)-$($env:TARGET)"
           New-Item -ItemType Directory -Force -Path "dist/$stage" | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.bin }}" "dist/$stage/"
+          Copy-Item "target/$($env:TARGET)/release/$($env:BIN_NAME)" "dist/$stage/"
           Copy-Item "README.md", "README.fr.md", "LICENSE" "dist/$stage/"
           Compress-Archive -Path "dist/$stage" -DestinationPath "dist/$stage.zip" -Force
           Remove-Item -Recurse -Force "dist/$stage"
 
       - name: Upload target archive artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: release-${{ matrix.target }}
           path: dist/filecleaner-${{ github.ref_name }}-${{ matrix.target }}.${{ matrix.archive }}
@@ -130,10 +150,12 @@ jobs:
     name: Publish GitHub Release
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Download all built target archives
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           path: dist
           merge-multiple: true
@@ -146,7 +168,7 @@ jobs:
 
       - name: Attach release archives and checksums to GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3
         with:
           files: dist/*
           generate_release_notes: true

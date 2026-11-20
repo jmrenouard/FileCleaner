@@ -55,13 +55,13 @@ Design guarantees enforced across every phase:
 
 Every FileCleaner-generated file (compressed archives, cross-filesystem move targets, PID files, live daemon JSON state, starter configs) uses crash-safe temporary staging:
 
-1. Write to a sibling temporary artifact `<target>.fc-tmp.<pid>.<seq>` (or `<target>.fc-tmp`).
+1. Write to a sibling temporary artifact `<target>.fc-tmp.<pid>.<seq>` (or `<target>.fc-tmp`) created exclusively (`create_new(true)`) with private `0o600` Unix permissions.
 2. Flush stream encoders and call `sync_all()` (`fsync`) on the staged file handle.
 3. Restore metadata (`atime`, `mtime`, permissions) where applicable.
 4. Atomically swap `<target>.fc-tmp...` to `<target>` via OS rename (`rename(2)` / Windows overwrite semantics) without clobbering existing targets unless explicitly permitted.
 5. Unlink source files **only after** steps 1–4 (and SHA-256 verification for cross-FS moves) succeed.
 
-All `.fc-tmp` and `.fc-tmp.*` internal staging artifacts are unconditionally excluded from rule candidate discovery so concurrent or interrupted runs never delete live staging buffers.
+All `.fc-tmp`, `.fc-tmp.*`, and rotated `<audit_log>.1` internal artifacts are unconditionally excluded from rule candidate discovery so concurrent or interrupted runs never delete live staging buffers or audit history. When `follow_symlinks = false`, FileCleaner opens source files with non-following flags (`O_NOFOLLOW` plus `(st_dev, st_ino)` identity verification on Unix; `FILE_FLAG_OPEN_REPARSE_POINT` plus reparse-attribute rejection on Windows) and verifies inode continuity before `copy_truncate` truncation.
 
 ### 1.4 Pure-Rust Portability & 9-Target Cross-Compilation Contract
 
@@ -590,9 +590,9 @@ When `in_use.enabled == true`, every candidate $f \in \mathcal{F}$ passes throug
 | Layer | Probe Mechanism | OS Scope | Detection Trigger | Fail-Safe & Edge Semantics |
 | :--- | :--- | :--- | :--- | :--- |
 | **1** | **Sidecar & Temp-Suffix Markers** | All OSes | Filename ends with suffix in `sidecar_suffixes` (`.lock`, `.lck`, `.part`, `.tmp`, `.processing`) **OR** sibling `<candidate_path><ext>` exists when `check_sidecar_locks = true`. | Always active when `in_use.enabled && check_sidecar_locks`. Prevents splitting multi-file transfer locks. |
-| **2** | **Unix Advisory `flock`** | `#[cfg(unix)]` | When `check_os_locks = true`, open candidate `O_RDONLY`, invoke `libc::flock(fd, LOCK_EX | LOCK_NB)`. `EWOULDBLOCK`/`EAGAIN` $\rightarrow$ busy; on success immediately `LOCK_UN` and close. | Uses `O_RDONLY` (unlike `fcntl` `F_WRLCK`, `flock` succeeds on read-only fds across Linux/macOS without mutating `mtime`). Direct open/stat failure $\rightarrow$ fail-closed busy. |
-| **3** | **Linux `/proc/*/fd` Inode Scan** | `#[cfg(target_os = "linux")]` | When `check_proc_fd = true`, stat candidate for `(st_dev, st_ino)`. Scan `/proc/<pid>/fd/*` (excluding `self` PID) and match target `(dev, ino)` via `stat` / `readlink`. | Unprivileged `EACCES`/`EPERM` on other users' `/proc/<pid>/fd` is **logged as diagnostic note** (not a global wildcard block); matching accessible fd flags `ProcFdOpen { pid }`. |
-| **4** | **Windows Exclusive Share-Mode** | `#[cfg(windows)]` | When `check_os_locks = true`, open candidate via `OpenOptions` with `share_mode(0)` and metadata/read access (`FILE_READ_ATTRIBUTES` / `read(true)`). | Any open handle with incompatible sharing returns `ERROR_SHARING_VIOLATION` (32) or `ERROR_LOCK_VIOLATION` (33) $\rightarrow$ `WindowsShareViolation`. Close immediately on success. |
+| **2** | **Unix Advisory `flock`** | `#[cfg(unix)]` | When `check_os_locks = true`, open candidate `O_RDONLY`, invoke `libc::flock(fd, LOCK_EX \| LOCK_NB)` in live runs or non-exclusive `LOCK_SH \| LOCK_NB` in read-only `plan`/`--dry-run` mode. `EWOULDBLOCK`/`EAGAIN` $\rightarrow$ busy; on success immediately `LOCK_UN` and close. | Uses `O_RDONLY` (unlike `fcntl` `F_WRLCK`, `flock` succeeds on read-only fds across Linux/macOS without mutating `mtime`). Skipped when cheaper probes (`sidecars`, `/proc`, `min_idle_age`) or $P_{\text{floor}}$ already apply. |
+| **3** | **Linux `/proc/*/fd` Inode Scan** | `#[cfg(target_os = "linux")]` | When `check_proc_fd = true`, stat candidate for `(st_dev, st_ino)`. Scan `/proc/<pid>/fd/*` (excluding `self` PID) once per sweep via `SweepLockProbe` and match `(dev, ino)` via `stat`. | Unprivileged `EACCES`/`EPERM` on other users' `/proc/<pid>/fd` is **logged as diagnostic note** (not a global wildcard block); matching accessible fd flags `ProcFdOpen { pid }`. |
+| **4** | **Windows Exclusive / Read-Only Share-Mode** | `#[cfg(windows)]` | When `check_os_locks = true`, open candidate via `OpenOptions` with `share_mode(0)` in live runs or non-exclusive `FILE_SHARE_READ` (`access_mode(0).share_mode(1)`) in read-only `plan`/`--dry-run` mode. | Any open handle with incompatible sharing returns `ERROR_SHARING_VIOLATION` (32) or `ERROR_LOCK_VIOLATION` (33) $\rightarrow$ `WindowsShareViolation`. Close immediately on success. |
 | **5** | **Minimum Idle Age Cooldown** | All OSes | Check $t_{\text{now}} - \text{mtime}(f) < \Delta_{\text{idle}}$ (always uses filesystem `mtime` regardless of rule `time_basis`). | Protects freshly touched files & future-skewed timestamps ($\text{mtime} > t_{\text{now}}$) fail-closed. |
 | **6** | **Two-Point Stability Window** | All OSes | Snapshot $p_0 = (\text{size}_0, \text{mtime}_0)$, wait $\Delta_{\text{stab}} = \text{stability\_window}$, snapshot $p_1 = (\text{size}_1, \text{mtime}_1)$. Trigger if $p_0 \neq p_1$. | **Batched Optimization**: Capture $p_0$ across all Probes 1–5 survivors, sleep **once** for $\Delta_{\text{stab}}$, then capture $p_1$ for all ($O(\Delta_{\text{stab}})$ total instead of $O(N \cdot \Delta_{\text{stab}})$). |
 
@@ -757,8 +757,8 @@ When `effective_dry_run == true` (via `--dry-run`, `plan`, global `dry_run`, or 
 
 ### 8.2 PID File & Live JSON State File
 
-- **PID File (`daemon.pid_file`)**: Checked on startup; if an existing PID is alive, startup fails cleanly with exit code `4` (`DaemonAlreadyRunning`). Stale PID files from dead processes are atomically replaced via `.fc-tmp` staging and removed upon graceful shutdown.
-- **Live JSON State File (`daemon.state_file`)**: Written atomically (`.fc-tmp` + `rename`) on startup, sweep start, sweep completion, and shutdown:
+- **PID File (`daemon.pid_file`)**: Checked on startup; if an existing PID is alive, startup fails cleanly with exit code `4` (`DaemonAlreadyRunning`). Stale PID files from dead processes are atomically replaced via `0o600` `.fc-tmp` staging and removed upon graceful shutdown.
+- **Live JSON State File (`daemon.state_file`)**: Written atomically (`0o600` `.fc-tmp` + `rename`) on startup, sweep start, sweep completion, and shutdown:
 
 ```json
 {
@@ -806,9 +806,10 @@ sequenceDiagram
 
 Shutdown protocol invariants:
 
-1. **Dual Shutdown Channel**: Handles both OS signals (`SIGINT` / `SIGTERM` via `ctrlc`) and a cross-platform cooperative **stop-file** (`daemon.stop_file`, polled on $\le 250\text{ ms}$ wake intervals).
-2. **Never Mid-File Abort**: If shutdown is signaled during a sweep, FileCleaner finishes the active single-file action (so no `.fc-tmp` or half-copied move is abandoned), cancels remaining queued items, writes `"stopped"` state JSON, removes `pid_file` and `stop_file`, flushes audit logs, and exits `0`.
-3. **Bounded Sweeps (`--max-sweeps <N>`)**: Exits deterministically after $N$ completed sweeps, enabling deterministic CI and integration tests without sleeping daemons.
+1. **Dual Shutdown Channel**: Handles both OS signals (`SIGINT` / `SIGTERM` via `ctrlc`) and a cross-platform cooperative **stop-file** (`daemon.stop_file`, written with `0o600` Unix mode and polled on `200 ms` wake intervals).
+2. **PID Identity Verification on `daemon stop`**: Before writing `stop_file` or issuing Unix `SIGTERM`, `daemon stop` checks that any live PID in `pid_file` belongs to a `filecleaner` process (via `/proc` on Linux, `ps` on non-Linux Unix, or `QueryFullProcessImageNameW` on Windows), refusing with exit code `4` if the OS recycled the PID to an unrelated executable.
+3. **Never Mid-File Abort**: If shutdown is signaled during a sweep, FileCleaner finishes the active single-file action (so no `.fc-tmp` or half-copied move is abandoned), cancels remaining queued items, writes `"stopped"` state JSON, removes `pid_file` and `stop_file`, flushes audit logs, and exits `0`.
+4. **Bounded Sweeps (`--max-sweeps <N>`)**: Exits deterministically after $N$ completed sweeps, enabling deterministic CI and integration tests without sleeping daemons.
 
 ---
 
@@ -843,7 +844,7 @@ Global options accepted before subcommands: `-c, --config <PATH>`, `--dry-run`, 
 
 ### 9.3 Structured JSONL Audit Log Schema
 
-Every audit line is a self-contained UTF-8 JSON object terminated by `\n` and flushed synchronously per event:
+Every audit line is a self-contained UTF-8 JSON object terminated by `\n` and flushed synchronously per event. `AuditLogger` opens `audit.jsonl` with private `0o600` permissions on Unix and rotates single-generation to `<audit_log>.1` (`0o600`) when reaching `50 MiB` (`DEFAULT_AUDIT_ROTATE_BYTES`); both the primary log and `<audit_log>.1` are guarded against rule scanning:
 
 | Field | Type | Description |
 | :--- | :--- | :--- |
@@ -881,8 +882,8 @@ Example JSONL lines:
 | Threat Vector | Architectural Mitigation |
 | :--- | :--- |
 | **Shell / Command Injection** | Hooks invoke `Command::new(cmd).args(vec)` directly; **never** invoke `sh -c` or `cmd /C`. Filenames with metacharacters remain literal argv bytes. |
-| **Symlink Traversal / Escape** | `follow_symlinks = false` default prevents external symlink deletion or out-of-tree traversal. |
-| **Infinite Self-Move Loops** | `INV-CFG-09` blocks `Move`/`Trash` inside recursive rule roots unless excluded. |
-| **TOCTOU Write Corruption** | 6-layer active-writer matrix (`min_idle_age` + 2-point `stability_window` + OS lock probes) + atomic `.fc-tmp` staging + post-copy SHA-256 verification. |
+| **Symlink Traversal / Escape** | `follow_symlinks = false` default plus non-following opens (`O_NOFOLLOW` / `FILE_FLAG_OPEN_REPARSE_POINT`) and pre-execute `(dev, ino)` checks prevent symlink-swap TOCTOU and out-of-tree deletion. |
+| **Infinite Self-Move Loops** | `INV-CFG-09` blocks `Move`/`Trash` inside recursive rule roots unless excluded, and idempotent `Compress`/`RenameByDate` skip already transformed names. |
+| **TOCTOU Write Corruption** | 6-layer active-writer matrix (`min_idle_age` + 2-point `stability_window` + non-intrusive OS lock probes) + `0o600` `.fc-tmp` staging + post-copy SHA-256 verification. |
 | **Partial / 0-Byte Backup Spoofing** | $\mathcal{F}_{\text{valid}}$ size floor $B_{\min}$ rejects corrupt stubs before computing $P_{\text{floor}}$ or $t_{\max}$. |
-| **Unbounded Hook Hangs** | Strict wall-clock `hook.timeout` enforced via `child.kill()` + `child.wait()` process reaping. |
+| **Unbounded Hook Hangs & Output OOM** | Strict wall-clock `hook.timeout` enforced via Unix process-group `SIGKILL` + `child.kill()`/`wait()`, `Stdio::null()` stdout, `64 KiB` stderr cap, and bounded `mpsc` pipe drain. |

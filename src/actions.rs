@@ -133,6 +133,7 @@ impl ActionExecutor {
                         ));
                     }
                     if !effective_dry_run && dest != target.path {
+                        reject_symlink_if_disallowed(&target.path, rule.follow_symlinks)?;
                         fs::rename(&target.path, &dest)
                             .map_err(|err| FileCleanerError::io(&dest, err))?;
                         restore_file_times(&dest, target.mtime, target.atime, None)?;
@@ -142,6 +143,15 @@ impl ActionExecutor {
                     steps_executed.push("RenameByDate".to_string());
                 }
                 ActionStep::Compress => {
+                    if !effective_dry_run {
+                        reject_symlink_if_disallowed(&target.path, rule.follow_symlinks)?;
+                    }
+                    if has_compressed_extension(&target.path) {
+                        final_path = Some(target.path.clone());
+                        remaining_in_source = target.size_bytes;
+                        steps_executed.push(format!("Compress({:?})", rule.compression));
+                        continue;
+                    }
                     let dest = compute_compressed_path(&target.path, rule.compression);
                     if fs::symlink_metadata(&dest).is_ok() && !rule.compress_overwrite {
                         return Err(FileCleanerError::io(
@@ -160,6 +170,7 @@ impl ActionExecutor {
                             rule.compression_level,
                         )?;
                         if rule.compress_remove_source {
+                            reject_symlink_if_disallowed(&target.path, rule.follow_symlinks)?;
                             fs::remove_file(&target.path)
                                 .map_err(|err| FileCleanerError::io(&target.path, err))?;
                             target.path = dest.clone();
@@ -202,6 +213,7 @@ impl ActionExecutor {
                     }
 
                     if !effective_dry_run {
+                        reject_symlink_if_disallowed(&target.path, rule.follow_symlinks)?;
                         if let Some(digest) = Self::move_with_cross_fs_fallback(
                             &target.path,
                             &dest,
@@ -274,6 +286,7 @@ impl ActionExecutor {
                     let file_name = extract_file_name(&target.path)?;
                     let dest = unique_collision_free_path(trash_dir, file_name);
                     if !effective_dry_run {
+                        reject_symlink_if_disallowed(&target.path, rule.follow_symlinks)?;
                         if let Some(digest) = Self::move_with_cross_fs_fallback(
                             &target.path,
                             &dest,
@@ -292,6 +305,7 @@ impl ActionExecutor {
                 }
                 ActionStep::Delete => {
                     if !effective_dry_run {
+                        reject_symlink_if_disallowed(&target.path, rule.follow_symlinks)?;
                         fs::remove_file(&target.path)
                             .map_err(|err| FileCleanerError::io(&target.path, err))?;
                         remaining_in_source = 0;
@@ -385,7 +399,7 @@ impl ActionExecutor {
             }
         }
 
-        let src_meta = fs::metadata(src).map_err(|err| FileCleanerError::io(src, err))?;
+        let (_, src_meta) = open_regular_nofollow_read(src)?;
         let staged_tmp = stage_temp_path(dest);
         let mut guard = TempFileGuard::new(staged_tmp.clone());
 
@@ -420,6 +434,18 @@ impl ActionExecutor {
         compress: Option<CompressionFormat>,
         compression_level: Option<u32>,
     ) -> Result<Option<String>> {
+        let sym_before = fs::symlink_metadata(&target.path)
+            .map_err(|err| FileCleanerError::io(&target.path, err))?;
+        if sym_before.file_type().is_symlink() || !sym_before.is_file() {
+            return Err(FileCleanerError::io(
+                &target.path,
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "refusing copy_truncate on symlink or non-regular file",
+                ),
+            ));
+        }
+
         if let Some(parent) = archive_dest.parent() {
             if !parent.as_os_str().is_empty() {
                 fs::create_dir_all(parent).map_err(|err| FileCleanerError::io(parent, err))?;
@@ -430,8 +456,6 @@ impl ActionExecutor {
             let _ = compress_file_staged(target, archive_dest, fmt, compression_level)?;
             None
         } else {
-            let src_meta = fs::metadata(&target.path)
-                .map_err(|err| FileCleanerError::io(&target.path, err))?;
             let staged_tmp = stage_temp_path(archive_dest);
             let mut guard = TempFileGuard::new(staged_tmp.clone());
             let (sha, _) = Self::copy_and_verify_sha256(&target.path, &staged_tmp)?;
@@ -440,16 +464,29 @@ impl ActionExecutor {
                 archive_dest,
                 target.mtime,
                 target.atime,
-                &src_meta,
+                &sym_before,
                 &mut guard,
             )?;
             Some(sha)
         };
 
-        let src_file = OpenOptions::new()
-            .write(true)
-            .open(&target.path)
-            .map_err(|err| FileCleanerError::io(&target.path, err))?;
+        let (src_file, write_meta) = open_regular_nofollow_write(&target.path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if (write_meta.dev(), write_meta.ino()) != (sym_before.dev(), sym_before.ino()) {
+                return Err(FileCleanerError::io(
+                    &target.path,
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "source file identity changed before copy_truncate",
+                    ),
+                ));
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = write_meta;
+
         src_file
             .set_len(0)
             .map_err(|err| FileCleanerError::io(&target.path, err))?;
@@ -497,15 +534,130 @@ pub fn verify_file_sha256(path: &Path, expected_hex: &str, expected_len: u64) ->
     Ok(())
 }
 
+/// Rejects symlinks when `follow_symlinks` is disabled before mutating or unlinking.
+fn reject_symlink_if_disallowed(path: &Path, follow_symlinks: bool) -> Result<()> {
+    if follow_symlinks {
+        return Ok(());
+    }
+    let meta = fs::symlink_metadata(path).map_err(|err| FileCleanerError::io(path, err))?;
+    if meta.file_type().is_symlink() {
+        return Err(FileCleanerError::io(
+            path,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "refusing to operate on symlink when follow_symlinks is false",
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Creates a new staging file with private `0o600` permissions on Unix.
+fn open_staged_tmp_private(staged_tmp: &Path) -> Result<File> {
+    let mut opts = OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    opts.open(staged_tmp)
+        .map_err(|err| FileCleanerError::io(staged_tmp, err))
+}
+
+/// Opens a regular file for reading without following symlinks or reparse points.
+fn open_regular_nofollow_read(path: &Path) -> Result<(File, fs::Metadata)> {
+    open_regular_nofollow(path, false)
+}
+
+/// Opens a regular file for writing without following symlinks or reparse points.
+fn open_regular_nofollow_write(path: &Path) -> Result<(File, fs::Metadata)> {
+    open_regular_nofollow(path, true)
+}
+
+/// Opens a regular file without following symlinks and verifies handle identity matches `symlink_metadata`.
+fn open_regular_nofollow(path: &Path, write: bool) -> Result<(File, fs::Metadata)> {
+    let sym = fs::symlink_metadata(path).map_err(|err| FileCleanerError::io(path, err))?;
+    if sym.file_type().is_symlink() || !sym.is_file() {
+        return Err(FileCleanerError::io(
+            path,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "refusing to open symlink or non-regular file",
+            ),
+        ));
+    }
+
+    let mut opts = OpenOptions::new();
+    if write {
+        opts.write(true);
+    } else {
+        opts.read(true);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        opts.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+
+    let file = opts
+        .open(path)
+        .map_err(|err| FileCleanerError::io(path, err))?;
+    let meta = file
+        .metadata()
+        .map_err(|err| FileCleanerError::io(path, err))?;
+    if !meta.is_file() {
+        return Err(FileCleanerError::io(
+            path,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "opened path is not a regular file",
+            ),
+        ));
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if (meta.dev(), meta.ino()) != (sym.dev(), sym.ino()) {
+            return Err(FileCleanerError::io(
+                path,
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "file identity changed while opening",
+                ),
+            ));
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+        if (meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
+            return Err(FileCleanerError::io(
+                path,
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "refusing to open reparse point",
+                ),
+            ));
+        }
+    }
+
+    Ok((file, meta))
+}
+
 fn copy_stream_with_sha256(src: &Path, staged_tmp: &Path) -> Result<(String, u64)> {
-    let src_file = File::open(src).map_err(|err| FileCleanerError::io(src, err))?;
+    let (src_file, _) = open_regular_nofollow_read(src)?;
     let mut reader = BufReader::new(src_file);
 
-    let tmp_file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(staged_tmp)
-        .map_err(|err| FileCleanerError::io(staged_tmp, err))?;
+    let tmp_file = open_staged_tmp_private(staged_tmp)?;
     let mut writer = BufWriter::new(tmp_file);
 
     let mut hasher = Sha256::new();
@@ -545,20 +697,13 @@ fn compress_file_staged(
     format: CompressionFormat,
     level: Option<u32>,
 ) -> Result<u64> {
-    let src_meta =
-        fs::metadata(&target.path).map_err(|err| FileCleanerError::io(&target.path, err))?;
-    let src_file =
-        File::open(&target.path).map_err(|err| FileCleanerError::io(&target.path, err))?;
+    let (src_file, src_meta) = open_regular_nofollow_read(&target.path)?;
     let mut reader = BufReader::new(src_file);
 
     let staged_tmp = stage_temp_path(dest);
     let mut guard = TempFileGuard::new(staged_tmp.clone());
 
-    let mut tmp_file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&staged_tmp)
-        .map_err(|err| FileCleanerError::io(&staged_tmp, err))?;
+    let mut tmp_file = open_staged_tmp_private(&staged_tmp)?;
 
     let entry_name = extract_file_name(&target.path)?
         .to_string_lossy()
@@ -633,7 +778,7 @@ fn compress_file_staged(
         &mut guard,
     )?;
 
-    let final_meta = fs::metadata(dest).map_err(|err| FileCleanerError::io(dest, err))?;
+    let final_meta = fs::symlink_metadata(dest).map_err(|err| FileCleanerError::io(dest, err))?;
     Ok(final_meta.len())
 }
 
@@ -668,6 +813,36 @@ fn commit_staged_file(
     Ok(())
 }
 
+/// Returns `true` when `path` already has a supported compressed archive extension.
+pub(crate) fn has_compressed_extension(path: &Path) -> bool {
+    let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+        return false;
+    };
+    ext.eq_ignore_ascii_case("gz")
+        || ext.eq_ignore_ascii_case("lz4")
+        || ext.eq_ignore_ascii_case("br")
+        || ext.eq_ignore_ascii_case("zip")
+}
+
+/// Returns `true` when the filename stem already carries a trailing `_{stamp}` matching `template`.
+pub(crate) fn has_trailing_date_stamp(path: &Path, template: &str, mtime: DateTime<Utc>) -> bool {
+    let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    let formatted = mtime.format(template).to_string();
+    for (pos, _) in stem.match_indices('_') {
+        let cand = &stem[pos + 1..];
+        if !cand.is_empty()
+            && (cand == formatted
+                || chrono::NaiveDateTime::parse_from_str(cand, template).is_ok()
+                || chrono::NaiveDate::parse_from_str(cand, template).is_ok())
+        {
+            return true;
+        }
+    }
+    false
+}
+
 fn compute_rename_destination(
     src: &Path,
     mtime: DateTime<Utc>,
@@ -678,6 +853,10 @@ fn compute_rename_destination(
         .as_deref()
         .unwrap_or(DEFAULT_RENAME_TEMPLATE);
     validate_strftime(template, &rule.name, "rename_template")?;
+
+    if has_trailing_date_stamp(src, template, mtime) {
+        return Ok(src.to_path_buf());
+    }
 
     let formatted = mtime.format(template).to_string();
     let new_name = format_stamped_filename(src, &formatted, None)?;
@@ -1170,5 +1349,45 @@ mod tests {
             io::ErrorKind::NotFound
         )));
         assert!(extract_file_name(Path::new("/")).is_err());
+
+        // Idempotency helper coverage: compressed extensions & trailing date stamps.
+        assert!(has_compressed_extension(Path::new("dump.sql.gz")));
+        assert!(has_compressed_extension(Path::new("dump.sql.LZ4")));
+        assert!(has_compressed_extension(Path::new("dump.sql.br")));
+        assert!(has_compressed_extension(Path::new("dump.sql.ZIP")));
+        assert!(!has_compressed_extension(Path::new("dump.sql")));
+        assert!(!has_compressed_extension(Path::new("no_extension")));
+
+        assert!(has_trailing_date_stamp(
+            Path::new("service_20261120_090500.log"),
+            DEFAULT_RENAME_TEMPLATE,
+            mtime
+        ));
+        assert!(has_trailing_date_stamp(
+            Path::new("daily_2026-11-20.sql"),
+            "%Y-%m-%d",
+            mtime
+        ));
+        assert!(!has_trailing_date_stamp(
+            Path::new("my_app_service.log"),
+            DEFAULT_RENAME_TEMPLATE,
+            mtime
+        ));
+        assert!(!has_trailing_date_stamp(
+            Path::new("plain.log"),
+            DEFAULT_RENAME_TEMPLATE,
+            mtime
+        ));
+
+        // Directory (non-regular) rejected by nofollow read/write helpers.
+        assert!(matches!(
+            open_regular_nofollow_read(tmp.path()),
+            Err(FileCleanerError::Io { .. })
+        ));
+        assert!(matches!(
+            open_regular_nofollow_write(tmp.path()),
+            Err(FileCleanerError::Io { .. })
+        ));
+        assert!(reject_symlink_if_disallowed(&same_file, true).is_ok());
     }
 }

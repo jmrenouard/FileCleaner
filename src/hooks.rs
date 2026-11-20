@@ -8,14 +8,19 @@ use crate::config::{ActionStep, CompressionFormat, HookConfig, HookFailurePolicy
 use crate::error::{FileCleanerError, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
 use std::ffi::OsStr;
-use std::io::Read;
+use std::io::{self, Read};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 /// Poll interval used while waiting for synchronous hook completion or timeout.
 const HOOK_POLL_INTERVAL: Duration = Duration::from_millis(5);
+/// Maximum bytes captured from a hook process's stderr stream.
+const MAX_HOOK_STDERR_BYTES: usize = 64 * 1024;
+/// Grace window to collect stderr after the direct hook process exits (avoids hanging on grandchildren).
+const STDERR_DRAIN_GRACE: Duration = Duration::from_millis(50);
 
 /// Metadata describing an eviction candidate passed to a pre-delete hook.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,11 +125,17 @@ impl HookRunner for ProcessHookRunner {
             .env("FILECLEANER_ACTION", &candidate.action_summary)
             .env("FILECLEANER_DRY_RUN", dry_run_str)
             .stdin(Stdio::null())
-            .stdout(Stdio::piped())
+            .stdout(Stdio::null())
             .stderr(Stdio::piped());
 
         if let Some(dir) = &hook.working_dir {
             cmd.current_dir(dir);
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
         }
 
         let mut child = match spawn_with_etxtbsy_retry(&mut cmd) {
@@ -140,33 +151,37 @@ impl HookRunner for ProcessHookRunner {
             }
         };
 
-        // Drain stdout and stderr concurrently so large child outputs never deadlock pipe buffers.
-        let stdout_reader = child.stdout.take().map(|mut pipe| {
+        // Drain up to 64 KiB of stderr on a background thread and send over a bounded channel
+        // so background grandchildren inheriting fd 2 cannot deadlock exit handling.
+        let (stderr_tx, stderr_rx) = mpsc::sync_channel::<Vec<u8>>(1);
+        if let Some(mut pipe) = child.stderr.take() {
             thread::spawn(move || {
                 let mut buf = Vec::new();
-                let _ = pipe.read_to_end(&mut buf);
-                buf
-            })
-        });
-        let stderr_reader = child.stderr.take().map(|mut pipe| {
-            thread::spawn(move || {
-                let mut buf = Vec::new();
-                let _ = pipe.read_to_end(&mut buf);
-                buf
-            })
-        });
+                let _ = (&mut pipe)
+                    .take(MAX_HOOK_STDERR_BYTES as u64)
+                    .read_to_end(&mut buf);
+                let _ = io::copy(&mut pipe, &mut io::sink());
+                let _ = stderr_tx.send(buf);
+            });
+        } else {
+            drop(stderr_tx);
+        }
 
         let start = Instant::now();
         loop {
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    if let Some(handle) = stdout_reader {
-                        let _ = handle.join();
-                    }
-                    let stderr_bytes = stderr_reader
-                        .and_then(|handle| handle.join().ok())
+                    let stderr_bytes = stderr_rx
+                        .recv_timeout(STDERR_DRAIN_GRACE)
                         .unwrap_or_default();
-                    let stderr_text = String::from_utf8_lossy(&stderr_bytes).trim().to_string();
+                    let mut stderr_text = String::from_utf8_lossy(&stderr_bytes).trim().to_string();
+                    if stderr_text.len() > MAX_HOOK_STDERR_BYTES {
+                        let mut end = MAX_HOOK_STDERR_BYTES;
+                        while !stderr_text.is_char_boundary(end) {
+                            end -= 1;
+                        }
+                        stderr_text.truncate(end);
+                    }
 
                     if let Some(code) = status.code() {
                         if code == 0 {
@@ -188,9 +203,7 @@ impl HookRunner for ProcessHookRunner {
                 Ok(None) => {
                     let elapsed = start.elapsed();
                     if elapsed >= hook.timeout {
-                        // Force-kill and immediately wait to guarantee zombie reaping.
-                        let _ = child.kill();
-                        let _ = child.wait();
+                        kill_hook_process_tree(&mut child);
                         let err = FileCleanerError::HookTimedOut {
                             rule: candidate.rule_name.clone(),
                             command: hook.command.clone(),
@@ -202,8 +215,7 @@ impl HookRunner for ProcessHookRunner {
                     thread::sleep(remaining.min(HOOK_POLL_INTERVAL));
                 }
                 Err(wait_err) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    kill_hook_process_tree(&mut child);
                     let err = FileCleanerError::HookFailed {
                         rule: candidate.rule_name.clone(),
                         command: hook.command.clone(),
@@ -290,7 +302,22 @@ pub fn format_action_summary(actions: &[ActionStep], compression: CompressionFor
         .join("->")
 }
 
-fn spawn_with_etxtbsy_retry(cmd: &mut Command) -> std::io::Result<std::process::Child> {
+fn kill_hook_process_tree(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        if let Ok(pid) = libc::pid_t::try_from(child.id()) {
+            if pid > 1 {
+                unsafe {
+                    let _ = libc::kill(-pid, libc::SIGKILL);
+                }
+            }
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn spawn_with_etxtbsy_retry(cmd: &mut Command) -> std::io::Result<Child> {
     const MAX_ATTEMPTS: usize = 6;
     for attempt in 0..MAX_ATTEMPTS {
         match cmd.spawn() {

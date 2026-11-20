@@ -6,8 +6,8 @@ use crate::config::{
     HookFailurePolicy, InUseConfig, RuleConfig, TimeBasis,
 };
 use crate::daemon::{
-    daemon_status, daemon_stop, generate_service_template, DaemonOptions, DaemonRunner,
-    ServiceTemplateTarget,
+    daemon_status, daemon_stop, generate_service_template, write_atomic_bytes_with_mode,
+    DaemonOptions, DaemonRunner, ServiceTemplateTarget,
 };
 use crate::engine::{
     RunOptions, SweepEngine, EXIT_CONFIG_OR_USAGE_ERROR, EXIT_DAEMON_ERROR, EXIT_IN_USE_BUSY,
@@ -19,13 +19,8 @@ use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 use std::collections::BTreeMap;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-
-static CLI_TMP_SEQ: AtomicU64 = AtomicU64::new(1);
 
 /// Top-level FileCleaner CLI entrypoint.
 #[derive(Debug, Parser)]
@@ -529,11 +524,7 @@ fn run_check_in_use_cmd(args: CheckInUseArgs, json: bool, quiet: bool) -> i32 {
         cfg.sidecar_suffixes = args.sidecar_ext;
     }
 
-    let reports: Vec<InUseReport> = args
-        .paths
-        .iter()
-        .map(|p| InUseDetector::check_single(p, &cfg))
-        .collect();
+    let reports = InUseDetector::check_paths(&args.paths, &cfg);
     let busy_count = reports.iter().filter(|r| r.is_busy).count();
     let all_safe = busy_count == 0;
 
@@ -668,7 +659,7 @@ fn run_init_cmd(args: InitArgs, json: bool, quiet: bool) -> i32 {
         return emit_error(&err, json);
     }
 
-    if let Err(err) = write_atomic_cli_file(&output_path, template.as_bytes()) {
+    if let Err(err) = write_atomic_bytes_with_mode(&output_path, template.as_bytes(), 0o600) {
         return emit_error(&err, json);
     }
 
@@ -860,7 +851,9 @@ fn run_daemon_cmd(
             let rendered =
                 generate_service_template(init_system.into(), &cfg_path, user.as_deref());
             if let Some(out_path) = output {
-                if let Err(err) = write_atomic_cli_file(&out_path, rendered.as_bytes()) {
+                if let Err(err) =
+                    write_atomic_bytes_with_mode(&out_path, rendered.as_bytes(), 0o644)
+                {
                     return emit_error(&err, json);
                 }
                 if json {
@@ -1478,41 +1471,6 @@ rules:
     }
 }
 
-fn write_atomic_cli_file(target: &Path, data: &[u8]) -> Result<()> {
-    if let Some(parent) = target.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent).map_err(|err| FileCleanerError::io(parent, err))?;
-        }
-    }
-    let seq = CLI_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let pid = std::process::id();
-    let mut tmp_os = target.as_os_str().to_os_string();
-    tmp_os.push(format!(".fc-tmp.{pid}.{seq}"));
-    let staged_tmp = PathBuf::from(tmp_os);
-
-    let res = (|| -> Result<()> {
-        let mut f = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&staged_tmp)
-            .map_err(|err| FileCleanerError::io(&staged_tmp, err))?;
-        f.write_all(data)
-            .map_err(|err| FileCleanerError::io(&staged_tmp, err))?;
-        f.flush()
-            .map_err(|err| FileCleanerError::io(&staged_tmp, err))?;
-        f.sync_all()
-            .map_err(|err| FileCleanerError::io(&staged_tmp, err))?;
-        drop(f);
-        fs::rename(&staged_tmp, target).map_err(|err| FileCleanerError::io(target, err))?;
-        Ok(())
-    })();
-
-    if res.is_err() {
-        let _ = fs::remove_file(&staged_tmp);
-    }
-    res
-}
-
 fn emit_error(err: &FileCleanerError, json: bool) -> i32 {
     let code = error_exit_code(err);
     if json {
@@ -1547,6 +1505,7 @@ pub fn error_exit_code(err: &FileCleanerError) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use tempfile::TempDir;
 
     #[test]

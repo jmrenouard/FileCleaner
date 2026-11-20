@@ -1,6 +1,6 @@
 //! Formal retention and backup-safety planning engine (Phases 3 & 4).
 
-use crate::config::{CombineMode, EvictionOrder, RuleConfig};
+use crate::config::{ActionStep, CombineMode, EvictionOrder, RuleConfig};
 use crate::in_use::InUseBatchResult;
 use crate::scanner::{Clock, ScanReport, ScannedFile};
 use chrono::DateTime;
@@ -78,6 +78,31 @@ pub struct SweepPlan {
     pub target_max_total_size: Option<u64>,
 }
 
+/// Computes the set of candidate paths unconditionally protected by `backup_guard.min_keep_files` (`P_floor`).
+pub(crate) fn compute_protected_floor_paths(
+    rule: &RuleConfig,
+    files: &[ScannedFile],
+) -> HashSet<PathBuf> {
+    if !rule.enabled || rule.backup_guard.min_keep_files == 0 {
+        return HashSet::new();
+    }
+
+    let b_min = rule.backup_guard.min_valid_backup_bytes;
+    let mut valid_files: Vec<&ScannedFile> =
+        files.iter().filter(|f| f.size_bytes >= b_min).collect();
+    valid_files.sort_by(|a, b| {
+        b.resolved_ts
+            .cmp(&a.resolved_ts)
+            .then_with(|| a.rel_path.cmp(&b.rel_path))
+    });
+
+    valid_files
+        .into_iter()
+        .take(rule.backup_guard.min_keep_files)
+        .map(|f| f.path.clone())
+        .collect()
+}
+
 /// Stateless planner implementing the mathematical model of `SPECIFICATIONS.md` §4.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RetentionEngine;
@@ -132,11 +157,7 @@ impl RetentionEngine {
         let valid_backup_count = valid_files.len();
 
         let n_min = valid_backup_count.min(rule.backup_guard.min_keep_files);
-        let floor_paths: HashSet<PathBuf> = valid_files
-            .iter()
-            .take(n_min)
-            .map(|f| f.path.clone())
-            .collect();
+        let floor_paths = compute_protected_floor_paths(rule, &ordered);
 
         let busy_paths: HashSet<PathBuf> = ordered
             .iter()
@@ -192,6 +213,23 @@ impl RetentionEngine {
 
         sort_eviction_candidates(&mut evictable, rule.eviction_order);
 
+        let removes_file = rule
+            .actions
+            .iter()
+            .any(|s| matches!(s, ActionStep::Delete | ActionStep::Trash | ActionStep::Move))
+            || (rule.actions.contains(&ActionStep::CopyTruncate)
+                && rule.min_file_size.unwrap_or(0) > 0);
+        let reclaims_bytes = rule.actions.iter().any(|s| {
+            matches!(
+                s,
+                ActionStep::Delete
+                    | ActionStep::Trash
+                    | ActionStep::Move
+                    | ActionStep::CopyTruncate
+            )
+        });
+        let evictable_count = evictable.len();
+
         let mut remaining_files = total_candidates;
         let mut remaining_bytes = total_bytes;
         let mut evict_files: Vec<ScannedFile> = Vec::new();
@@ -203,8 +241,12 @@ impl RetentionEngine {
                 evaluate_eviction_predicates(rule, file, remaining_files, remaining_bytes, now);
 
             if should_evict {
-                remaining_files = remaining_files.saturating_sub(1);
-                remaining_bytes = remaining_bytes.saturating_sub(file.size_bytes);
+                if removes_file {
+                    remaining_files = remaining_files.saturating_sub(1);
+                }
+                if reclaims_bytes {
+                    remaining_bytes = remaining_bytes.saturating_sub(file.size_bytes);
+                }
                 evict_files.push(file.clone());
                 evictable_decisions.insert(file.path.clone(), (DecisionKind::WouldEvict, reason));
             } else {
@@ -248,13 +290,17 @@ impl RetentionEngine {
             })
             .collect();
 
-        // Constrained when safety guards (P_floor U S_busy) keep count or size caps unsatisfied.
-        let constrained_by_files = rule
-            .max_files
-            .is_some_and(|max_f| remaining_files > max_f && protected_count > max_f);
-        let constrained_by_bytes = rule
-            .max_total_size
-            .is_some_and(|max_b| remaining_bytes > max_b && protected_bytes > max_b);
+        // Constrained when safety guards (P_floor U S_busy) or in-place actions leave count or size caps unsatisfied.
+        let constrained_by_files = rule.max_files.is_some_and(|max_f| {
+            remaining_files > max_f
+                && (protected_count > max_f
+                    || (!removes_file && evict_files.len() == evictable_count))
+        });
+        let constrained_by_bytes = rule.max_total_size.is_some_and(|max_b| {
+            remaining_bytes > max_b
+                && (protected_bytes > max_b
+                    || (!reclaims_bytes && evict_files.len() == evictable_count))
+        });
         let outcome = if constrained_by_files || constrained_by_bytes {
             RuleOutcome::Constrained
         } else {
@@ -683,5 +729,32 @@ mod tests {
         );
         assert_eq!(plan_huge.outcome, RuleOutcome::Ok);
         assert!(plan_huge.evict_files.is_empty());
+    }
+
+    #[test]
+    fn compute_protected_floor_paths_sorts_unsorted_inputs_and_respects_disabled_and_size_min() {
+        let now = chrono::Utc
+            .with_ymd_and_hms(2026, 11, 20, 12, 0, 0)
+            .unwrap();
+        let old_big = file("old_big.sql", 500, 300, now);
+        let mid_big = file("mid_big.sql", 500, 200, now);
+        let new_stub = file("new_stub.sql", 10, 10, now);
+        let files = vec![old_big, new_stub, mid_big.clone()];
+
+        let mut rule = base_rule("floor-helper");
+        rule.backup_guard.enabled = true;
+        rule.backup_guard.min_keep_files = 1;
+        rule.backup_guard.min_valid_backup_bytes = 100;
+
+        let floor = compute_protected_floor_paths(&rule, &files);
+        assert_eq!(floor.len(), 1);
+        assert!(floor.contains(&mid_big.path));
+
+        rule.backup_guard.min_keep_files = 0;
+        assert!(compute_protected_floor_paths(&rule, &files).is_empty());
+
+        rule.backup_guard.min_keep_files = 1;
+        rule.enabled = false;
+        assert!(compute_protected_floor_paths(&rule, &files).is_empty());
     }
 }

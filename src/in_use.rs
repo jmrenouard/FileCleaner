@@ -125,6 +125,15 @@ pub trait LockProbe: Send + Sync {
     /// the candidate itself failed (treated fail-closed as [`InUseReason::ProbeError`]).
     fn check_os_lock(&self, path: &Path) -> std::result::Result<Option<InUseReason>, String>;
 
+    /// Checks native OS file locks using non-exclusive read-only probing (`LOCK_SH` on Unix,
+    /// `FILE_SHARE_READ` on Windows) so dry-run/plan inspections do not contend with readers.
+    fn check_os_lock_readonly(
+        &self,
+        path: &Path,
+    ) -> std::result::Result<Option<InUseReason>, String> {
+        self.check_os_lock(path)
+    }
+
     /// Checks whether external processes hold open descriptors referencing `path`.
     fn check_proc_fd(&self, path: &Path) -> ProcFdProbeOutcome;
 
@@ -145,11 +154,30 @@ impl LockProbe for OsLockProbe {
     fn check_os_lock(&self, path: &Path) -> std::result::Result<Option<InUseReason>, String> {
         #[cfg(unix)]
         {
-            unix_check_flock(path)
+            unix_check_flock_flags(path, libc::LOCK_EX | libc::LOCK_NB)
         }
         #[cfg(windows)]
         {
-            windows_check_share_mode(path)
+            windows_check_share_mode_with(path, false)
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = path;
+            Ok(None)
+        }
+    }
+
+    fn check_os_lock_readonly(
+        &self,
+        path: &Path,
+    ) -> std::result::Result<Option<InUseReason>, String> {
+        #[cfg(unix)]
+        {
+            unix_check_flock_flags(path, libc::LOCK_SH | libc::LOCK_NB)
+        }
+        #[cfg(windows)]
+        {
+            windows_check_share_mode_with(path, true)
         }
         #[cfg(not(any(unix, windows)))]
         {
@@ -166,7 +194,7 @@ impl LockProbe for OsLockProbe {
     fn check_proc_fd_batch(&self, paths: &[&Path]) -> BTreeMap<PathBuf, ProcFdProbeOutcome> {
         #[cfg(target_os = "linux")]
         {
-            linux_check_proc_fd_batch(paths)
+            linux_check_proc_fd_batch(paths, None)
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -174,6 +202,42 @@ impl LockProbe for OsLockProbe {
                 .iter()
                 .map(|&p| (p.to_path_buf(), ProcFdProbeOutcome::default()))
                 .collect()
+        }
+    }
+}
+
+/// Sweep-scoped probe caching the Linux `/proc/*/fd` inode map across rules in a single sweep.
+#[derive(Debug, Default)]
+pub(crate) struct SweepLockProbe {
+    #[cfg(target_os = "linux")]
+    proc_snapshot: std::sync::OnceLock<ProcInodeSnapshot>,
+}
+
+impl LockProbe for SweepLockProbe {
+    fn check_os_lock(&self, path: &Path) -> std::result::Result<Option<InUseReason>, String> {
+        OsLockProbe.check_os_lock(path)
+    }
+
+    fn check_os_lock_readonly(
+        &self,
+        path: &Path,
+    ) -> std::result::Result<Option<InUseReason>, String> {
+        OsLockProbe.check_os_lock_readonly(path)
+    }
+
+    fn check_proc_fd(&self, path: &Path) -> ProcFdProbeOutcome {
+        let mut batch = self.check_proc_fd_batch(&[path]);
+        batch.remove(path).unwrap_or_default()
+    }
+
+    fn check_proc_fd_batch(&self, paths: &[&Path]) -> BTreeMap<PathBuf, ProcFdProbeOutcome> {
+        #[cfg(target_os = "linux")]
+        {
+            linux_check_proc_fd_batch(paths, Some(&self.proc_snapshot))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            OsLockProbe.check_proc_fd_batch(paths)
         }
     }
 }
@@ -193,6 +257,19 @@ impl InUseDetector {
         cfg: &InUseConfig,
         clock: &dyn Clock,
         probe: &dyn LockProbe,
+    ) -> InUseBatchResult {
+        Self::check_batch_scoped(files, cfg, clock, probe, &HashSet::new(), false)
+    }
+
+    /// Scoped batch probe allowing callers to skip OS lock probing on protected floor candidates
+    /// and to request non-exclusive read-only OS lock checks during dry-run/plan passes.
+    pub(crate) fn check_batch_scoped(
+        files: &[ScannedFile],
+        cfg: &InUseConfig,
+        clock: &dyn Clock,
+        probe: &dyn LockProbe,
+        skip_os_locks_for: &HashSet<PathBuf>,
+        read_only: bool,
     ) -> InUseBatchResult {
         let mut result = InUseBatchResult::default();
         if files.is_empty() {
@@ -232,15 +309,6 @@ impl InUseDetector {
                 check_sidecars(&file.path, &file.name, &cfg.sidecar_suffixes, reasons);
             }
 
-            // Layer 2 / 4: OS-native lock probes (Unix flock / Windows share_mode(0)).
-            if cfg.check_os_locks {
-                match probe.check_os_lock(&file.path) {
-                    Ok(Some(reason)) => reasons.push(reason),
-                    Ok(None) => {}
-                    Err(err_msg) => reasons.push(InUseReason::ProbeError { reason: err_msg }),
-                }
-            }
-
             // Layer 3: Linux /proc/*/fd open descriptor scan.
             if cfg.check_proc_fd {
                 if let Some(outcome) = proc_fd_map.get(&file.path) {
@@ -263,6 +331,20 @@ impl InUseDetector {
             // Layer 5: Minimum idle age cooldown using live filesystem mtime.
             if let Some(min_idle) = cfg.min_idle_age {
                 check_min_idle_age(&file.path, now, min_idle, reasons);
+            }
+
+            // Layer 2 / 4: OS-native lock probes run last and skip files already classified or floored.
+            if cfg.check_os_locks && reasons.is_empty() && !skip_os_locks_for.contains(&file.path) {
+                let lock_res = if read_only {
+                    probe.check_os_lock_readonly(&file.path)
+                } else {
+                    probe.check_os_lock(&file.path)
+                };
+                match lock_res {
+                    Ok(Some(reason)) => reasons.push(reason),
+                    Ok(None) => {}
+                    Err(err_msg) => reasons.push(InUseReason::ProbeError { reason: err_msg }),
+                }
             }
         }
 
@@ -323,6 +405,105 @@ impl InUseDetector {
         result
     }
 
+    /// Evaluates multiple paths in a single batched pass using [`SystemClock`] and [`OsLockProbe`].
+    pub fn check_paths(paths: &[PathBuf], cfg: &InUseConfig) -> Vec<InUseReport> {
+        Self::check_paths_with(paths, cfg, &SystemClock, &OsLockProbe)
+    }
+
+    fn check_paths_with(
+        paths: &[PathBuf],
+        cfg: &InUseConfig,
+        clock: &dyn Clock,
+        probe: &dyn LockProbe,
+    ) -> Vec<InUseReport> {
+        if !cfg.enabled {
+            return paths
+                .iter()
+                .map(|path| InUseReport {
+                    path: path.clone(),
+                    is_busy: false,
+                    reasons: Vec::new(),
+                })
+                .collect();
+        }
+
+        let mut reports: Vec<Option<InUseReport>> = vec![None; paths.len()];
+        let mut valid_files = Vec::with_capacity(paths.len());
+        let mut valid_indices = Vec::with_capacity(paths.len());
+
+        for (idx, path) in paths.iter().enumerate() {
+            let metadata = match fs::metadata(path) {
+                Ok(meta) => meta,
+                Err(err) => {
+                    reports[idx] = Some(probe_error_report(
+                        path,
+                        format!("failed to stat '{}': {err}", path.display()),
+                    ));
+                    continue;
+                }
+            };
+
+            if !metadata.is_file() {
+                reports[idx] = Some(probe_error_report(
+                    path,
+                    format!("'{}' is not a regular file", path.display()),
+                ));
+                continue;
+            }
+
+            let modified_ts = match metadata
+                .modified()
+                .map_err(|err| format!("failed to read mtime for '{}': {err}", path.display()))
+                .and_then(|st| system_time_to_utc(st, path).map_err(|e| e.to_string()))
+            {
+                Ok(ts) => ts,
+                Err(reason) => {
+                    reports[idx] = Some(probe_error_report(path, reason));
+                    continue;
+                }
+            };
+
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+
+            valid_files.push(ScannedFile {
+                path: path.clone(),
+                rel_path: name.clone(),
+                name,
+                size_bytes: metadata.len(),
+                resolved_ts: modified_ts,
+                modified_ts,
+                created_ts: metadata
+                    .created()
+                    .ok()
+                    .and_then(|st| system_time_to_utc(st, path).ok()),
+            });
+            valid_indices.push(idx);
+        }
+
+        if !valid_files.is_empty() {
+            let batch = Self::check_batch(&valid_files, cfg, clock, probe);
+            for idx in valid_indices {
+                let path = &paths[idx];
+                reports[idx] = Some(batch.reports.get(path).cloned().unwrap_or_else(|| {
+                    probe_error_report(path, "missing batch report for target path".to_string())
+                }));
+            }
+        }
+
+        paths
+            .iter()
+            .zip(reports)
+            .map(|(path, rep)| {
+                rep.unwrap_or_else(|| {
+                    probe_error_report(path, "missing report for target path".to_string())
+                })
+            })
+            .collect()
+    }
+
     /// Evaluates a single path against [`InUseConfig`] using [`SystemClock`] and [`OsLockProbe`].
     pub fn check_single(path: &Path, cfg: &InUseConfig) -> InUseReport {
         Self::check_single_with(path, cfg, &SystemClock, &OsLockProbe)
@@ -335,78 +516,20 @@ impl InUseDetector {
         clock: &dyn Clock,
         probe: &dyn LockProbe,
     ) -> InUseReport {
-        if !cfg.enabled {
-            return InUseReport {
-                path: path.to_path_buf(),
-                is_busy: false,
-                reasons: Vec::new(),
-            };
-        }
+        Self::check_paths_with(&[path.to_path_buf()], cfg, clock, probe)
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| {
+                probe_error_report(path, "missing batch report for target path".to_string())
+            })
+    }
+}
 
-        let metadata = match fs::metadata(path) {
-            Ok(meta) => meta,
-            Err(err) => {
-                return InUseReport {
-                    path: path.to_path_buf(),
-                    is_busy: true,
-                    reasons: vec![InUseReason::ProbeError {
-                        reason: format!("failed to stat '{}': {err}", path.display()),
-                    }],
-                };
-            }
-        };
-
-        if !metadata.is_file() {
-            return InUseReport {
-                path: path.to_path_buf(),
-                is_busy: true,
-                reasons: vec![InUseReason::ProbeError {
-                    reason: format!("'{}' is not a regular file", path.display()),
-                }],
-            };
-        }
-
-        let modified_ts = match metadata
-            .modified()
-            .map_err(|err| format!("failed to read mtime for '{}': {err}", path.display()))
-            .and_then(|st| system_time_to_utc(st, path).map_err(|e| e.to_string()))
-        {
-            Ok(ts) => ts,
-            Err(reason) => {
-                return InUseReport {
-                    path: path.to_path_buf(),
-                    is_busy: true,
-                    reasons: vec![InUseReason::ProbeError { reason }],
-                };
-            }
-        };
-
-        let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-
-        let scanned = ScannedFile {
-            path: path.to_path_buf(),
-            rel_path: name.clone(),
-            name,
-            size_bytes: metadata.len(),
-            resolved_ts: modified_ts,
-            modified_ts,
-            created_ts: metadata
-                .created()
-                .ok()
-                .and_then(|st| system_time_to_utc(st, path).ok()),
-        };
-
-        let mut batch = Self::check_batch(&[scanned], cfg, clock, probe);
-        batch.reports.remove(path).unwrap_or_else(|| InUseReport {
-            path: path.to_path_buf(),
-            is_busy: true,
-            reasons: vec![InUseReason::ProbeError {
-                reason: "missing batch report for target path".to_string(),
-            }],
-        })
+fn probe_error_report(path: &Path, reason: String) -> InUseReport {
+    InUseReport {
+        path: path.to_path_buf(),
+        is_busy: true,
+        reasons: vec![InUseReason::ProbeError { reason }],
     }
 }
 
@@ -499,7 +622,10 @@ fn snapshot_size_mtime(path: &Path) -> std::result::Result<(u64, SystemTime), St
 }
 
 #[cfg(unix)]
-fn unix_check_flock(path: &Path) -> std::result::Result<Option<InUseReason>, String> {
+fn unix_check_flock_flags(
+    path: &Path,
+    flags: libc::c_int,
+) -> std::result::Result<Option<InUseReason>, String> {
     use std::os::unix::io::AsRawFd;
 
     let file = fs::OpenOptions::new()
@@ -510,9 +636,9 @@ fn unix_check_flock(path: &Path) -> std::result::Result<Option<InUseReason>, Str
 
     loop {
         // SAFETY: `fd` is a valid open descriptor owned by `file` for the duration of this loop.
-        let rc = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
+        let rc = unsafe { libc::flock(fd, flags) };
         if rc == 0 {
-            // SAFETY: `fd` holds the exclusive lock just acquired; release immediately before close.
+            // SAFETY: `fd` holds the lock just acquired; release immediately before close.
             let _ = unsafe { libc::flock(fd, libc::LOCK_UN) };
             return Ok(None);
         }
@@ -532,19 +658,34 @@ fn unix_check_flock(path: &Path) -> std::result::Result<Option<InUseReason>, Str
 }
 
 #[cfg(windows)]
-fn windows_check_share_mode(path: &Path) -> std::result::Result<Option<InUseReason>, String> {
+fn windows_check_share_mode_with(
+    path: &Path,
+    read_only: bool,
+) -> std::result::Result<Option<InUseReason>, String> {
     use std::os::windows::fs::OpenOptionsExt;
     const ERROR_SHARING_VIOLATION: i32 = 32;
     const ERROR_LOCK_VIOLATION: i32 = 33;
 
-    match fs::OpenOptions::new().read(true).share_mode(0).open(path) {
+    let mut opts = fs::OpenOptions::new();
+    if read_only {
+        opts.access_mode(0).share_mode(1);
+    } else {
+        opts.read(true).share_mode(0);
+    }
+
+    match opts.open(path) {
         Ok(_file) => Ok(None),
         Err(err) => match err.raw_os_error() {
             Some(ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION) => {
                 Ok(Some(InUseReason::WindowsShareViolation))
             }
             _ => Err(format!(
-                "Windows share_mode(0) probe failed on '{}': {err}",
+                "Windows {} probe failed on '{}': {err}",
+                if read_only {
+                    "share_mode(1)"
+                } else {
+                    "share_mode(0)"
+                },
                 path.display()
             )),
         },
@@ -552,7 +693,85 @@ fn windows_check_share_mode(path: &Path) -> std::result::Result<Option<InUseReas
 }
 
 #[cfg(target_os = "linux")]
-fn linux_check_proc_fd_batch(paths: &[&Path]) -> BTreeMap<PathBuf, ProcFdProbeOutcome> {
+#[derive(Debug, Default)]
+struct ProcInodeSnapshot {
+    inode_pids: std::collections::HashMap<(u64, u64), Vec<u32>>,
+    diagnostics: Vec<String>,
+}
+
+#[cfg(target_os = "linux")]
+impl ProcInodeSnapshot {
+    fn capture(filter: Option<&HashSet<(u64, u64)>>) -> Self {
+        use std::os::unix::fs::MetadataExt;
+
+        let mut snapshot = Self::default();
+        let proc_entries = match fs::read_dir("/proc") {
+            Ok(entries) => entries,
+            Err(err) => {
+                snapshot
+                    .diagnostics
+                    .push(format!("unable to read /proc for fd inspection: {err}"));
+                return snapshot;
+            }
+        };
+
+        let self_pid = std::process::id();
+        let mut permission_denied_pids = 0usize;
+
+        for proc_entry in proc_entries.flatten() {
+            let Ok(pid_str) = proc_entry.file_name().into_string() else {
+                continue;
+            };
+            let Ok(pid) = pid_str.parse::<u32>() else {
+                continue;
+            };
+            if pid == self_pid {
+                continue;
+            }
+
+            let fd_dir = proc_entry.path().join("fd");
+            let fd_entries = match fs::read_dir(&fd_dir) {
+                Ok(entries) => entries,
+                Err(err) => {
+                    if err.kind() == std::io::ErrorKind::PermissionDenied {
+                        permission_denied_pids += 1;
+                    }
+                    continue;
+                }
+            };
+
+            for fd_entry in fd_entries.flatten() {
+                if let Ok(fd_meta) = fs::metadata(fd_entry.path()) {
+                    // Regular-file check excludes pipes, sockets, and anon_inodes in one stat call.
+                    if !fd_meta.is_file() {
+                        continue;
+                    }
+                    let key = (fd_meta.dev(), fd_meta.ino());
+                    if filter.is_none_or(|wanted| wanted.contains(&key)) {
+                        let pids = snapshot.inode_pids.entry(key).or_default();
+                        if !pids.contains(&pid) {
+                            pids.push(pid);
+                        }
+                    }
+                }
+            }
+        }
+
+        if permission_denied_pids > 0 {
+            snapshot.diagnostics.push(format!(
+                "skipped {permission_denied_pids} unprivileged /proc/<pid>/fd directories (EACCES/EPERM)"
+            ));
+        }
+
+        snapshot
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_check_proc_fd_batch(
+    paths: &[&Path],
+    cache: Option<&std::sync::OnceLock<ProcInodeSnapshot>>,
+) -> BTreeMap<PathBuf, ProcFdProbeOutcome> {
     use std::collections::HashMap;
     use std::os::unix::fs::MetadataExt;
 
@@ -582,78 +801,33 @@ fn linux_check_proc_fd_batch(paths: &[&Path]) -> BTreeMap<PathBuf, ProcFdProbeOu
         return outcomes;
     }
 
-    let proc_entries = match fs::read_dir("/proc") {
-        Ok(entries) => entries,
-        Err(err) => {
-            let diag = format!("unable to read /proc for fd inspection: {err}");
-            for outcome in outcomes.values_mut() {
-                outcome.diagnostics.push(diag.clone());
-            }
-            return outcomes;
+    let owned_snapshot;
+    let snapshot = match cache {
+        Some(lock) => lock.get_or_init(|| ProcInodeSnapshot::capture(None)),
+        None => {
+            let filter: HashSet<(u64, u64)> = target_inodes.keys().copied().collect();
+            owned_snapshot = ProcInodeSnapshot::capture(Some(&filter));
+            &owned_snapshot
         }
     };
 
-    let self_pid = std::process::id();
-    let mut permission_denied_pids = 0usize;
-
-    for proc_entry in proc_entries.flatten() {
-        let Ok(pid_str) = proc_entry.file_name().into_string() else {
-            continue;
-        };
-        let Ok(pid) = pid_str.parse::<u32>() else {
-            continue;
-        };
-        if pid == self_pid {
-            continue;
+    for diag in &snapshot.diagnostics {
+        for outcome in outcomes.values_mut() {
+            outcome.diagnostics.push(diag.clone());
         }
+    }
 
-        let fd_dir = proc_entry.path().join("fd");
-        let fd_entries = match fs::read_dir(&fd_dir) {
-            Ok(entries) => entries,
-            Err(err) => {
-                if err.kind() == std::io::ErrorKind::PermissionDenied {
-                    permission_denied_pids += 1;
-                }
-                continue;
-            }
-        };
-
-        for fd_entry in fd_entries.flatten() {
-            let fd_path = fd_entry.path();
-            if let Ok(target) = fs::read_link(&fd_path) {
-                if let Some(target_str) = target.to_str() {
-                    if target_str.starts_with("pipe:")
-                        || target_str.starts_with("socket:")
-                        || target_str.starts_with("anon_inode:")
-                    {
-                        continue;
-                    }
-                }
-            }
-
-            if let Ok(fd_meta) = fs::metadata(&fd_path) {
-                if !fd_meta.is_file() {
-                    continue;
-                }
-                if let Some(matched_paths) = target_inodes.get(&(fd_meta.dev(), fd_meta.ino())) {
-                    for matched_path in matched_paths {
-                        if let Some(outcome) = outcomes.get_mut(matched_path) {
-                            if !outcome.open_pids.contains(&pid) {
-                                outcome.open_pids.push(pid);
-                            }
+    for (key, matched_paths) in target_inodes {
+        if let Some(pids) = snapshot.inode_pids.get(&key) {
+            for matched_path in matched_paths {
+                if let Some(outcome) = outcomes.get_mut(&matched_path) {
+                    for &pid in pids {
+                        if !outcome.open_pids.contains(&pid) {
+                            outcome.open_pids.push(pid);
                         }
                     }
                 }
             }
-        }
-    }
-
-    if permission_denied_pids > 0 {
-        let diag = format!(
-            "skipped {permission_denied_pids} unprivileged /proc/<pid>/fd directories (EACCES/EPERM)"
-        );
-        for outcome in outcomes.values_mut() {
-            outcome.diagnostics.push(diag.clone());
         }
     }
 
@@ -958,5 +1132,135 @@ mod tests {
         assert!(direct_missing.fatal_error.is_some());
         #[cfg(not(target_os = "linux"))]
         assert!(direct_missing.fatal_error.is_none() && direct_missing.open_pids.is_empty());
+    }
+
+    #[test]
+    fn check_batch_scoped_skips_floor_and_recent_files_and_uses_readonly_probe() {
+        use std::sync::Mutex;
+
+        #[derive(Default)]
+        struct CountingProbe {
+            ex_calls: Mutex<Vec<PathBuf>>,
+            ro_calls: Mutex<Vec<PathBuf>>,
+        }
+
+        impl LockProbe for CountingProbe {
+            fn check_os_lock(
+                &self,
+                path: &Path,
+            ) -> std::result::Result<Option<InUseReason>, String> {
+                self.ex_calls.lock().unwrap().push(path.to_path_buf());
+                Ok(None)
+            }
+
+            fn check_os_lock_readonly(
+                &self,
+                path: &Path,
+            ) -> std::result::Result<Option<InUseReason>, String> {
+                self.ro_calls.lock().unwrap().push(path.to_path_buf());
+                Ok(None)
+            }
+
+            fn check_proc_fd(&self, _path: &Path) -> ProcFdProbeOutcome {
+                ProcFdProbeOutcome::default()
+            }
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let now = Utc.with_ymd_and_hms(2026, 11, 20, 12, 0, 0).unwrap();
+
+        let p_floor = tmp.path().join("floor.sql");
+        let p_recent = tmp.path().join("recent.sql");
+        let p_idle = tmp.path().join("idle.sql");
+        for (p, age) in [(&p_floor, 600), (&p_recent, 5), (&p_idle, 600)] {
+            fs::write(p, b"data").unwrap();
+            set_mtime_unix(p, now.timestamp() - age);
+        }
+
+        let files = vec![
+            make_scanned(&p_floor, now.timestamp() - 600),
+            make_scanned(&p_recent, now.timestamp() - 5),
+            make_scanned(&p_idle, now.timestamp() - 600),
+        ];
+        let mut skip_floor = HashSet::new();
+        skip_floor.insert(p_floor.clone());
+
+        let cfg = InUseConfig {
+            check_sidecar_locks: false,
+            check_proc_fd: false,
+            check_os_locks: true,
+            min_idle_age: Some(Duration::from_secs(30)),
+            stability_window: None,
+            ..InUseConfig::default()
+        };
+
+        let ro_probe = CountingProbe::default();
+        let ro_res = InUseDetector::check_batch_scoped(
+            &files,
+            &cfg,
+            &FixedClock(now),
+            &ro_probe,
+            &skip_floor,
+            true,
+        );
+        assert!(!ro_res.is_busy(&p_floor));
+        assert!(ro_res.is_busy(&p_recent));
+        assert!(!ro_res.is_busy(&p_idle));
+        assert!(ro_probe.ex_calls.lock().unwrap().is_empty());
+        assert_eq!(*ro_probe.ro_calls.lock().unwrap(), vec![p_idle.clone()]);
+
+        let ex_probe = CountingProbe::default();
+        let _ex_res = InUseDetector::check_batch_scoped(
+            &files,
+            &cfg,
+            &FixedClock(now),
+            &ex_probe,
+            &skip_floor,
+            false,
+        );
+        assert!(ex_probe.ro_calls.lock().unwrap().is_empty());
+        assert_eq!(*ex_probe.ex_calls.lock().unwrap(), vec![p_idle]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sweep_lock_probe_reuses_single_proc_snapshot_across_batches_and_fails_closed_on_missing() {
+        use std::io::{BufRead, BufReader};
+        use std::process::{Command, Stdio};
+
+        let tmp = TempDir::new().unwrap();
+        let f1 = tmp.path().join("open1.log");
+        let f2 = tmp.path().join("closed2.log");
+        fs::write(&f1, b"one").unwrap();
+        fs::write(&f2, b"two").unwrap();
+
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("exec 3<\"$1\"; printf 'READY\\n'; exec sleep 10")
+            .arg("sh")
+            .arg(&f1)
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut line = String::new();
+        BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        assert_eq!(line.trim(), "READY");
+
+        let probe = SweepLockProbe::default();
+        let batch1 = probe.check_proc_fd_batch(&[f1.as_path()]);
+        assert!(batch1[&f1].open_pids.contains(&child.id()));
+
+        let _ = child.kill();
+        let _ = child.wait();
+
+        // Second call uses the cached snapshot in `OnceLock` (so f1 still reflects the snapshot
+        // from rule 1 rather than re-walking `/proc`), while missing paths still fail closed.
+        let missing = tmp.path().join("missing.log");
+        let batch2 = probe.check_proc_fd_batch(&[f1.as_path(), f2.as_path(), missing.as_path()]);
+        assert!(batch2[&f1].open_pids.contains(&child.id()));
+        assert!(batch2[&f2].open_pids.is_empty());
+        assert!(batch2[&missing].fatal_error.is_some());
     }
 }

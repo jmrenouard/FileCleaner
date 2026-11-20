@@ -2,7 +2,6 @@
 
 use crate::error::{FileCleanerError, Result};
 use chrono::format::{Item, StrftimeItems};
-use globset::Glob;
 use regex::Regex;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::{BTreeMap, HashSet};
@@ -597,78 +596,7 @@ impl Config {
                 )));
             }
 
-            for pattern in &rule.include_globs {
-                Glob::new(pattern).map_err(|source| FileCleanerError::InvalidGlob {
-                    pattern: pattern.clone(),
-                    source,
-                })?;
-            }
-
-            let mut compiled_exclude_globs = Vec::with_capacity(rule.exclude_globs.len());
-            for pattern in &rule.exclude_globs {
-                let glob = Glob::new(pattern).map_err(|source| FileCleanerError::InvalidGlob {
-                    pattern: pattern.clone(),
-                    source,
-                })?;
-                compiled_exclude_globs.push(glob.compile_matcher());
-            }
-
-            if let Some(pattern) = &rule.include_regex {
-                Regex::new(pattern).map_err(|source| FileCleanerError::InvalidRegex {
-                    pattern: pattern.clone(),
-                    source,
-                })?;
-            }
-
-            let compiled_exclude_regex = if let Some(pattern) = &rule.exclude_regex {
-                Some(
-                    Regex::new(pattern).map_err(|source| FileCleanerError::InvalidRegex {
-                        pattern: pattern.clone(),
-                        source,
-                    })?,
-                )
-            } else {
-                None
-            };
-
-            if let Some(pattern) = &rule.filename_date_regex {
-                Regex::new(pattern).map_err(|source| FileCleanerError::InvalidRegex {
-                    pattern: pattern.clone(),
-                    source,
-                })?;
-            }
-
-            if rule.time_basis == TimeBasis::FilenameDate {
-                if rule
-                    .filename_date_regex
-                    .as_deref()
-                    .map(str::trim)
-                    .unwrap_or("")
-                    .is_empty()
-                {
-                    return Err(FileCleanerError::ConfigValidation(format!(
-                        "rule '{trimmed_name}' uses time_basis=filename_date without filename_date_regex"
-                    )));
-                }
-                if rule
-                    .filename_date_format
-                    .as_deref()
-                    .map(str::trim)
-                    .unwrap_or("")
-                    .is_empty()
-                {
-                    return Err(FileCleanerError::ConfigValidation(format!(
-                        "rule '{trimmed_name}' uses time_basis=filename_date without filename_date_format"
-                    )));
-                }
-                if let Some(fmt) = &rule.filename_date_format {
-                    if StrftimeItems::new(fmt).any(|item| matches!(item, Item::Error)) {
-                        return Err(FileCleanerError::ConfigValidation(format!(
-                            "rule '{trimmed_name}' has invalid filename_date_format '{fmt}'"
-                        )));
-                    }
-                }
-            }
+            let compiled = crate::scanner::compile_rule_matchers(rule)?;
 
             if let (Some(min_sz), Some(max_sz)) = (rule.min_file_size, rule.max_file_size) {
                 if min_sz > max_sz {
@@ -751,8 +679,8 @@ impl Config {
                         "move_to",
                         &rule.path,
                         move_dest,
-                        &compiled_exclude_globs,
-                        compiled_exclude_regex.as_ref(),
+                        &compiled.exclude_globs,
+                        compiled.exclude_regex.as_ref(),
                     )?;
                 }
 
@@ -762,8 +690,8 @@ impl Config {
                         "copy_truncate_to",
                         &rule.path,
                         ct_dest,
-                        &compiled_exclude_globs,
-                        compiled_exclude_regex.as_ref(),
+                        &compiled.exclude_globs,
+                        compiled.exclude_regex.as_ref(),
                     )?;
                 }
 
@@ -781,8 +709,8 @@ impl Config {
                         "trash_dir",
                         &rule.path,
                         trash_dest,
-                        &compiled_exclude_globs,
-                        compiled_exclude_regex.as_ref(),
+                        &compiled.exclude_globs,
+                        compiled.exclude_regex.as_ref(),
                     )?;
                 }
             }
@@ -876,7 +804,7 @@ fn to_forward_slash_str(path: &Path) -> String {
 
 /// Normalizes a path by canonicalizing the deepest existing ancestor and appending remaining
 /// normalized components cleanly without requiring the final leaf directory to exist yet.
-fn resolve_path_lexically(path: &Path) -> PathBuf {
+pub(crate) fn resolve_path_lexically(path: &Path) -> PathBuf {
     let abs = if path.is_absolute() {
         path.to_path_buf()
     } else if let Ok(cwd) = std::env::current_dir() {
@@ -2075,10 +2003,23 @@ run_in_dry_run = true
 
         // Zero daemon interval rejected.
         let mut zero_daemon = Config {
-            rules: vec![minimal_rule("ok", root)],
+            rules: vec![minimal_rule("ok", root.clone())],
             ..Config::default()
         };
         zero_daemon.daemon.interval = Duration::ZERO;
         assert!(zero_daemon.validate().is_err());
+
+        // Invalid filename_date_regex is rejected even when time_basis is Modified.
+        let mut bad_unused_fn_regex = minimal_rule("unused-fn-re", root);
+        bad_unused_fn_regex.time_basis = TimeBasis::Modified;
+        bad_unused_fn_regex.filename_date_regex = Some("(unclosed".to_string());
+        assert!(matches!(
+            Config {
+                rules: vec![bad_unused_fn_regex],
+                ..Config::default()
+            }
+            .validate(),
+            Err(FileCleanerError::InvalidRegex { .. })
+        ));
     }
 }

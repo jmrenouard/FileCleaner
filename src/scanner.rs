@@ -1,13 +1,13 @@
 //! Directory traversal, filter algebra, timestamp resolution, and deterministic sorting.
 
-use crate::config::{DaemonConfig, RuleConfig, TimeBasis};
+use crate::config::{resolve_path_lexically, ActionStep, DaemonConfig, RuleConfig, TimeBasis};
 use crate::error::{FileCleanerError, Result};
 use chrono::format::{Item, StrftimeItems};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use globset::{Glob, GlobMatcher};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -74,16 +74,14 @@ pub struct ScanReport {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Scanner;
 
-struct CompiledFilters {
-    include_globs: Vec<GlobMatcher>,
-    exclude_globs: Vec<GlobMatcher>,
-    include_regex: Option<Regex>,
-    exclude_regex: Option<Regex>,
-}
-
-struct FilenameDateParser<'a> {
-    regex: Regex,
-    format: &'a str,
+/// Precompiled glob, regex, and `filename_date` matchers shared across config validation and scanning.
+#[derive(Debug, Clone)]
+pub(crate) struct CompiledRuleMatchers {
+    pub(crate) include_globs: Vec<GlobMatcher>,
+    pub(crate) exclude_globs: Vec<GlobMatcher>,
+    pub(crate) include_regex: Option<Regex>,
+    pub(crate) exclude_regex: Option<Regex>,
+    pub(crate) filename_date: Option<(Regex, String)>,
 }
 
 struct InternalArtifactGuard {
@@ -93,12 +91,34 @@ struct InternalArtifactGuard {
 }
 
 impl Scanner {
+    /// Precompiles glob, regex, and `filename_date` matchers for every rule in `config`.
+    pub(crate) fn compile_config(
+        config: &crate::config::Config,
+    ) -> Result<HashMap<String, CompiledRuleMatchers>> {
+        let mut compiled = HashMap::with_capacity(config.rules.len());
+        for rule in &config.rules {
+            compiled.insert(rule.name.clone(), compile_rule_matchers(rule)?);
+        }
+        Ok(compiled)
+    }
+
     /// Scans `rule.path` according to depth, symlink, filter, size, and `TimeBasis` rules.
     ///
     /// Internal temporary artifacts (`*.fc-tmp`, `*.fc-tmp.*`) and configured operational
-    /// paths (`audit_log`, `pid_file`, `state_file`, `stop_file`) are unconditionally excluded.
+    /// paths (`audit_log`, `audit_log.1`, `pid_file`, `state_file`, `stop_file`) are
+    /// unconditionally excluded.
     pub fn scan_rule(
         rule: &RuleConfig,
+        audit_log: Option<&Path>,
+        daemon: &DaemonConfig,
+    ) -> Result<ScanReport> {
+        Self::scan_rule_compiled(rule, None, audit_log, daemon)
+    }
+
+    /// Scans `rule.path`, optionally reusing precompiled matchers from [`Scanner::compile_config`].
+    pub(crate) fn scan_rule_compiled(
+        rule: &RuleConfig,
+        compiled: Option<&CompiledRuleMatchers>,
         audit_log: Option<&Path>,
         daemon: &DaemonConfig,
     ) -> Result<ScanReport> {
@@ -118,10 +138,25 @@ impl Scanner {
             ));
         }
 
-        let filters = compile_filters(rule)?;
-        let fn_date_parser = compile_filename_date_parser(rule)?;
+        let owned_matchers;
+        let matchers = match compiled {
+            Some(precompiled) => precompiled,
+            None => {
+                owned_matchers = compile_rule_matchers(rule)?;
+                &owned_matchers
+            }
+        };
         let internal_guard = build_internal_guard(audit_log, daemon);
         let norm_root = resolve_path_lexically(&rule.path);
+        let has_removing_action = rule.actions.iter().any(|s| {
+            matches!(
+                s,
+                ActionStep::Delete
+                    | ActionStep::Trash
+                    | ActionStep::Move
+                    | ActionStep::CopyTruncate
+            )
+        });
 
         let mut walker = WalkDir::new(&rule.path).follow_links(rule.follow_symlinks);
         if !rule.recursive {
@@ -145,8 +180,8 @@ impl Scanner {
                 if is_dir_excluded(
                     &rel_str,
                     &name,
-                    &filters.exclude_globs,
-                    filters.exclude_regex.as_ref(),
+                    &matchers.exclude_globs,
+                    matchers.exclude_regex.as_ref(),
                 ) {
                     return false;
                 }
@@ -187,7 +222,7 @@ impl Scanner {
             }
 
             let rel_path = normalized_rel_path(&rule.path, entry_path);
-            if !matches_filter_algebra(&rel_path, &name, &filters) {
+            if !matches_filter_algebra(&rel_path, &name, matchers) {
                 continue;
             }
 
@@ -208,6 +243,21 @@ impl Scanner {
                 .map_err(|err| FileCleanerError::io(entry_path, err))?;
             let modified_ts = system_time_to_utc(modified_sys, entry_path)?;
 
+            // Skip files already transformed by an in-place-only pipeline so recurring
+            // sweeps do not endlessly re-compress or re-stamp existing outputs.
+            if !has_removing_action
+                && ((rule.actions.contains(&ActionStep::Compress)
+                    && crate::actions::has_compressed_extension(entry_path))
+                    || (rule.actions.contains(&ActionStep::RenameByDate)
+                        && crate::actions::has_trailing_date_stamp(
+                            entry_path,
+                            rule.rename_template.as_deref().unwrap_or("%Y%m%d_%H%M%S"),
+                            modified_ts,
+                        )))
+            {
+                continue;
+            }
+
             let (resolved_ts, created_ts) = match rule.time_basis {
                 TimeBasis::Modified => {
                     let created_ts = metadata
@@ -224,13 +274,14 @@ impl Scanner {
                     (created, Some(created))
                 }
                 TimeBasis::FilenameDate => {
-                    let parser = fn_date_parser.as_ref().ok_or_else(|| {
-                        FileCleanerError::ConfigValidation(format!(
-                            "rule '{}' missing compiled filename_date parser",
-                            rule.name
-                        ))
-                    })?;
-                    match parse_filename_timestamp_with(parser, &name) {
+                    let (fn_regex, fn_format) =
+                        matchers.filename_date.as_ref().ok_or_else(|| {
+                            FileCleanerError::ConfigValidation(format!(
+                                "rule '{}' missing compiled filename_date parser",
+                                rule.name
+                            ))
+                        })?;
+                    match parse_filename_timestamp_with(fn_regex, fn_format, &name) {
                         Some(parsed_ts) => {
                             let created_ts = metadata
                                 .created()
@@ -276,7 +327,8 @@ impl Scanner {
     }
 }
 
-fn compile_filters(rule: &RuleConfig) -> Result<CompiledFilters> {
+/// Validates and compiles glob, regex, and `filename_date` matchers for a single rule.
+pub(crate) fn compile_rule_matchers(rule: &RuleConfig) -> Result<CompiledRuleMatchers> {
     let mut include_globs = Vec::with_capacity(rule.include_globs.len());
     for pattern in &rule.include_globs {
         let glob = Glob::new(pattern).map_err(|source| FileCleanerError::InvalidGlob {
@@ -319,70 +371,79 @@ fn compile_filters(rule: &RuleConfig) -> Result<CompiledFilters> {
         None => None,
     };
 
-    Ok(CompiledFilters {
+    // Validate filename_date_regex syntax whenever provided, even if time_basis != FilenameDate.
+    let pre_fn_regex = match &rule.filename_date_regex {
+        Some(pattern) => {
+            Some(
+                Regex::new(pattern).map_err(|source| FileCleanerError::InvalidRegex {
+                    pattern: pattern.clone(),
+                    source,
+                })?,
+            )
+        }
+        None => None,
+    };
+
+    let filename_date = if rule.time_basis == TimeBasis::FilenameDate {
+        let trimmed_name = rule.name.trim();
+        let regex_str = rule
+            .filename_date_regex
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                FileCleanerError::ConfigValidation(format!(
+                    "rule '{trimmed_name}' uses time_basis=filename_date without filename_date_regex"
+                ))
+            })?;
+
+        let format = rule
+            .filename_date_format
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                FileCleanerError::ConfigValidation(format!(
+                    "rule '{trimmed_name}' uses time_basis=filename_date without filename_date_format"
+                ))
+            })?;
+
+        if StrftimeItems::new(format).any(|item| matches!(item, Item::Error)) {
+            return Err(FileCleanerError::ConfigValidation(format!(
+                "rule '{trimmed_name}' has invalid filename_date_format '{format}'"
+            )));
+        }
+
+        let compiled_regex = match pre_fn_regex {
+            Some(re) if rule.filename_date_regex.as_deref() == Some(regex_str) => re,
+            _ => Regex::new(regex_str).map_err(|source| FileCleanerError::InvalidRegex {
+                pattern: regex_str.to_string(),
+                source,
+            })?,
+        };
+        Some((compiled_regex, format.to_string()))
+    } else {
+        None
+    };
+
+    Ok(CompiledRuleMatchers {
         include_globs,
         exclude_globs,
         include_regex,
         exclude_regex,
+        filename_date,
     })
 }
 
-fn compile_filename_date_parser(rule: &RuleConfig) -> Result<Option<FilenameDateParser<'_>>> {
-    if rule.time_basis != TimeBasis::FilenameDate {
-        return Ok(None);
-    }
-
-    let regex_str = rule
-        .filename_date_regex
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| {
-            FileCleanerError::ConfigValidation(format!(
-                "rule '{}' uses time_basis=filename_date without filename_date_regex",
-                rule.name
-            ))
-        })?;
-
-    let format = rule
-        .filename_date_format
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| {
-            FileCleanerError::ConfigValidation(format!(
-                "rule '{}' uses time_basis=filename_date without filename_date_format",
-                rule.name
-            ))
-        })?;
-
-    if StrftimeItems::new(format).any(|item| matches!(item, Item::Error)) {
-        return Err(FileCleanerError::ConfigValidation(format!(
-            "rule '{}' has invalid filename_date_format '{format}'",
-            rule.name
-        )));
-    }
-
-    let regex = Regex::new(regex_str).map_err(|source| FileCleanerError::InvalidRegex {
-        pattern: regex_str.to_string(),
-        source,
-    })?;
-
-    Ok(Some(FilenameDateParser { regex, format }))
-}
-
-fn parse_filename_timestamp_with(
-    parser: &FilenameDateParser<'_>,
-    name: &str,
-) -> Option<DateTime<Utc>> {
-    let captures = parser.regex.captures(name)?;
+fn parse_filename_timestamp_with(regex: &Regex, format: &str, name: &str) -> Option<DateTime<Utc>> {
+    let captures = regex.captures(name)?;
     let slice = captures
         .name("date")
         .or_else(|| captures.get(1))
         .or_else(|| captures.get(0))?
         .as_str();
 
-    parse_timestamp_slice(slice, parser.format)
+    parse_timestamp_slice(slice, format)
 }
 
 /// Parses an extracted date/time substring using RFC/offset, naive datetime, or naive date formats.
@@ -404,8 +465,15 @@ fn build_internal_guard(audit_log: Option<&Path>, daemon: &DaemonConfig) -> Inte
     let mut normalized_paths = HashSet::new();
     let mut file_names = HashSet::new();
 
+    let rotated_audit = audit_log.map(|p| {
+        let mut os = p.as_os_str().to_os_string();
+        os.push(".1");
+        PathBuf::from(os)
+    });
+
     for path in [
         audit_log,
+        rotated_audit.as_deref(),
         daemon.pid_file.as_deref(),
         daemon.state_file.as_deref(),
         daemon.stop_file.as_deref(),
@@ -476,25 +544,25 @@ fn is_dir_excluded(
     false
 }
 
-fn matches_filter_algebra(rel_path: &str, name: &str, filters: &CompiledFilters) -> bool {
+fn matches_filter_algebra(rel_path: &str, name: &str, matchers: &CompiledRuleMatchers) -> bool {
     if is_excluded(
         rel_path,
         name,
-        &filters.exclude_globs,
-        filters.exclude_regex.as_ref(),
+        &matchers.exclude_globs,
+        matchers.exclude_regex.as_ref(),
     ) {
         return false;
     }
 
-    if filters.include_globs.is_empty() && filters.include_regex.is_none() {
+    if matchers.include_globs.is_empty() && matchers.include_regex.is_none() {
         return true;
     }
 
-    let glob_match = filters
+    let glob_match = matchers
         .include_globs
         .iter()
         .any(|g| g.is_match(rel_path) || g.is_match(name));
-    let regex_match = filters
+    let regex_match = matchers
         .include_regex
         .as_ref()
         .is_some_and(|re| re.is_match(rel_path) || re.is_match(name));
@@ -624,57 +692,6 @@ pub(crate) fn system_time_to_utc(st: SystemTime, path: &Path) -> Result<DateTime
                 )
             })
         }
-    }
-}
-
-fn resolve_path_lexically(path: &Path) -> PathBuf {
-    let abs = if path.is_absolute() {
-        path.to_path_buf()
-    } else if let Ok(cwd) = std::env::current_dir() {
-        cwd.join(path)
-    } else {
-        path.to_path_buf()
-    };
-
-    let mut stack: Vec<Component<'_>> = Vec::new();
-    for comp in abs.components() {
-        match comp {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if matches!(stack.last(), Some(Component::Normal(_))) {
-                    stack.pop();
-                }
-            }
-            other => stack.push(other),
-        }
-    }
-
-    let mut lexical = PathBuf::new();
-    for comp in stack {
-        lexical.push(comp.as_os_str());
-    }
-
-    let mut existing = lexical.as_path();
-    let mut tail: Vec<OsString> = Vec::new();
-    while !existing.exists() {
-        if let Some(name) = existing.file_name() {
-            tail.push(name.to_os_string());
-        } else {
-            break;
-        }
-        match existing.parent() {
-            Some(parent) => existing = parent,
-            None => break,
-        }
-    }
-
-    if let Ok(mut canon) = fs::canonicalize(existing) {
-        for seg in tail.into_iter().rev() {
-            canon.push(seg);
-        }
-        canon
-    } else {
-        lexical
     }
 }
 
@@ -1046,5 +1063,95 @@ mod tests {
         let report = Scanner::scan_rule(&rule, None, &DaemonConfig::default()).unwrap();
         assert_eq!(report.files.len(), 1);
         assert_eq!(report.files[0].name, "regular.log");
+    }
+
+    #[test]
+    fn scan_rule_compiled_excludes_rotated_audit_log_and_skips_idempotent_inplace_outputs() {
+        use crate::config::Config;
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("inplace");
+        fs::create_dir_all(&root).unwrap();
+
+        let ts = Utc
+            .with_ymd_and_hms(2026, 11, 20, 9, 5, 0)
+            .unwrap()
+            .timestamp();
+        let audit = root.join("audit.jsonl");
+        let rotated_audit = root.join("audit.jsonl.1");
+        let raw_log = root.join("service.log");
+        let compressed_gz = root.join("service.log.gz");
+        let stamped_log = root.join("app_20261120_090500.log");
+        let unstamped_log = root.join("app.log");
+
+        for p in [
+            &audit,
+            &rotated_audit,
+            &raw_log,
+            &compressed_gz,
+            &stamped_log,
+            &unstamped_log,
+        ] {
+            fs::write(p, b"data").unwrap();
+            set_mtime_unix(p, ts as u64);
+        }
+
+        let mut compress_rule = base_rule("inplace-compress", root.clone());
+        compress_rule.actions = vec![ActionStep::Compress];
+
+        let mut rename_rule = base_rule("inplace-rename", root.clone());
+        rename_rule.actions = vec![ActionStep::RenameByDate];
+
+        let mut compress_delete_rule = base_rule("compress-then-delete", root);
+        compress_delete_rule.actions = vec![ActionStep::Compress, ActionStep::Delete];
+
+        let cfg = Config {
+            rules: vec![
+                compress_rule.clone(),
+                rename_rule.clone(),
+                compress_delete_rule.clone(),
+            ],
+            ..Config::default()
+        };
+        let compiled = Scanner::compile_config(&cfg).unwrap();
+
+        // Compress-only rule excludes rotated audit log (`audit.jsonl.1`) and already-compressed `.gz`.
+        let comp_scan = Scanner::scan_rule_compiled(
+            &compress_rule,
+            compiled.get("inplace-compress"),
+            Some(&audit),
+            &DaemonConfig::default(),
+        )
+        .unwrap();
+        let comp_names: Vec<&str> = comp_scan.files.iter().map(|f| f.name.as_str()).collect();
+        assert!(!comp_names.contains(&"audit.jsonl"));
+        assert!(!comp_names.contains(&"audit.jsonl.1"));
+        assert!(!comp_names.contains(&"service.log.gz"));
+        assert!(comp_names.contains(&"service.log"));
+
+        // RenameByDate-only rule skips already-stamped file matching modified_ts/template.
+        let ren_scan = Scanner::scan_rule_compiled(
+            &rename_rule,
+            compiled.get("inplace-rename"),
+            Some(&audit),
+            &DaemonConfig::default(),
+        )
+        .unwrap();
+        let ren_names: Vec<&str> = ren_scan.files.iter().map(|f| f.name.as_str()).collect();
+        assert!(!ren_names.contains(&"app_20261120_090500.log"));
+        assert!(ren_names.contains(&"app.log"));
+
+        // Rules containing a removing action (`Delete`) still scan `.gz` and stamped files.
+        let del_scan = Scanner::scan_rule_compiled(
+            &compress_delete_rule,
+            compiled.get("compress-then-delete"),
+            Some(&audit),
+            &DaemonConfig::default(),
+        )
+        .unwrap();
+        let del_names: Vec<&str> = del_scan.files.iter().map(|f| f.name.as_str()).collect();
+        assert!(del_names.contains(&"service.log.gz"));
+        assert!(del_names.contains(&"app_20261120_090500.log"));
+        assert!(!del_names.contains(&"audit.jsonl.1"));
     }
 }

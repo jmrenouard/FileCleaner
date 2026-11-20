@@ -574,3 +574,104 @@ $lines = @(
     assert!(start.elapsed() < Duration::from_secs(3));
     assert!(matches!(timeout_err, FileCleanerError::HookTimedOut { .. }));
 }
+
+#[cfg(unix)]
+#[test]
+fn hook_grandchild_pipe_safety_stderr_cap_and_process_group_kill() {
+    use std::thread;
+
+    let tmp = TempDir::new().unwrap();
+    let candidate_path = tmp.path().join("artifact.log");
+    fs::write(&candidate_path, b"payload").unwrap();
+    let candidate = make_candidate(candidate_path, "pipe-safety");
+    let runner = ProcessHookRunner::new();
+
+    // 1. Background grandchild holding stderr fd open must not stall parent exit.
+    let bg_pid_file = tmp.path().join("bg_grandchild.pid");
+    let bg_script = write_executable_script(
+        tmp.path(),
+        "bg_grandchild.sh",
+        &format!(
+            "#!/usr/bin/env bash\nsleep 10 &\necho $! > \"{}\"\nexit 0\n",
+            bg_pid_file.display()
+        ),
+    );
+    let mut bg_hook = make_hook_config(bg_script.to_string_lossy().into_owned(), vec![]);
+    bg_hook.timeout = Duration::from_secs(2);
+
+    let start = Instant::now();
+    let verdict = runner.run(&candidate, &bg_hook, false).unwrap();
+    let elapsed = start.elapsed();
+    assert_eq!(verdict, HookVerdict::Proceed);
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "grandchild keeping fd 2 open must not block hook return (took {elapsed:?})"
+    );
+
+    if let Ok(pid_raw) = fs::read_to_string(&bg_pid_file) {
+        if let Ok(gpid) = pid_raw.trim().parse::<libc::pid_t>() {
+            if gpid > 1 {
+                unsafe {
+                    let _ = libc::kill(gpid, libc::SIGKILL);
+                }
+            }
+        }
+    }
+
+    // 2. 2 MiB stdout + 200 KiB stderr must not deadlock or OOM, and stderr is capped at 64 KiB.
+    let flood_script = write_executable_script(
+        tmp.path(),
+        "flood.sh",
+        "#!/usr/bin/env bash\n\
+         chunk=$(printf '%04096d' 0)\n\
+         i=0; while [ \"$i\" -lt 512 ]; do printf '%s' \"$chunk\"; i=$((i+1)); done\n\
+         i=0; while [ \"$i\" -lt 50 ]; do printf '%s' \"$chunk\" >&2; i=$((i+1)); done\n\
+         exit 17\n",
+    );
+    let mut flood_hook = make_hook_config(flood_script.to_string_lossy().into_owned(), vec![]);
+    flood_hook.timeout = Duration::from_secs(5);
+    let flood_err = runner.run(&candidate, &flood_hook, false).unwrap_err();
+    match flood_err {
+        FileCleanerError::HookFailed {
+            exit_code, stderr, ..
+        } => {
+            assert_eq!(exit_code, Some(17));
+            assert_eq!(stderr.len(), 64 * 1024);
+        }
+        other => panic!("expected HookFailed, got {other:?}"),
+    }
+
+    // 3. Hook timeout kills the entire process group including spawned background children.
+    let group_pid_file = tmp.path().join("group_child.pid");
+    let group_script = write_executable_script(
+        tmp.path(),
+        "group_timeout.sh",
+        &format!(
+            "#!/usr/bin/env bash\nsleep 10 &\necho $! > \"{}\"\nwait\n",
+            group_pid_file.display()
+        ),
+    );
+    let mut group_hook = make_hook_config(group_script.to_string_lossy().into_owned(), vec![]);
+    group_hook.timeout = Duration::from_millis(300);
+    let group_err = runner.run(&candidate, &group_hook, false).unwrap_err();
+    assert!(matches!(group_err, FileCleanerError::HookTimedOut { .. }));
+
+    let gpid: libc::pid_t = fs::read_to_string(&group_pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert!(gpid > 1);
+    let mut alive = true;
+    for _ in 0..50 {
+        if unsafe { libc::kill(gpid, 0) } != 0 {
+            alive = false;
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        !alive,
+        "timeout must kill background grandchild PID {gpid} via process group SIGKILL"
+    );
+}
