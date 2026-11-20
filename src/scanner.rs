@@ -894,7 +894,9 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let file = root.join("item.bak");
         fs::write(&file, b"data").unwrap();
-        set_mtime_unix(&file, 1_500_000_000);
+        // Set mtime strictly in the future so macOS APFS does not clamp `st_birthtime` backward.
+        let future_mtime = 1_900_000_000_u64.max((Utc::now().timestamp() + 86_400) as u64);
+        set_mtime_unix(&file, future_mtime);
 
         let mut rule = base_rule("created", root);
         rule.time_basis = TimeBasis::Created;
@@ -979,11 +981,22 @@ mod tests {
     #[test]
     fn system_time_overflow_and_lexical_path_resolution_handle_edge_cases() {
         let path = Path::new("/tmp/overflow");
-        let huge_future = UNIX_EPOCH + std::time::Duration::from_secs(u64::MAX / 2);
-        assert!(matches!(
-            system_time_to_utc(huge_future, path),
-            Err(FileCleanerError::Io { .. })
-        ));
+        if let Some(huge_future) =
+            UNIX_EPOCH.checked_add(std::time::Duration::from_secs(u64::MAX / 2))
+        {
+            assert!(matches!(
+                system_time_to_utc(huge_future, path),
+                Err(FileCleanerError::Io { .. })
+            ));
+        }
+        if let Some(huge_past) =
+            UNIX_EPOCH.checked_sub(std::time::Duration::from_secs(u64::MAX / 2))
+        {
+            assert!(matches!(
+                system_time_to_utc(huge_past, path),
+                Err(FileCleanerError::Io { .. })
+            ));
+        }
 
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().join("root");

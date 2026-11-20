@@ -136,7 +136,7 @@ fn batched_stability_window_detects_growing_file_in_single_sleep() {
         check_os_locks: false,
         check_proc_fd: false,
         min_idle_age: None,
-        stability_window: Some(Duration::from_millis(120)),
+        stability_window: Some(Duration::from_millis(200)),
         ..InUseConfig::default()
     };
 
@@ -154,9 +154,9 @@ fn batched_stability_window_detects_growing_file_in_single_sleep() {
     let elapsed = started.elapsed();
     writer.join().unwrap();
 
-    // Batched check across 4 survivors sleeps once (~120ms), well below 4 * 120ms = 480ms.
-    assert!(elapsed >= Duration::from_millis(100));
-    assert!(elapsed < Duration::from_millis(380));
+    // Batched check across 4 survivors sleeps once (~200ms), well below 4 * 200ms = 800ms.
+    assert!(elapsed >= Duration::from_millis(150));
+    assert!(elapsed < Duration::from_millis(650));
 
     assert!(res.is_busy(&growing));
     assert!(res.reports[&growing]
@@ -310,6 +310,37 @@ fn real_linux_proc_fd_detects_child_process_holding_open_descriptor() {
     assert!(clean_report.reasons.is_empty());
 }
 
+#[cfg(windows)]
+#[test]
+fn real_windows_share_mode_blocks_eviction_until_released() {
+    let tmp = TempDir::new().unwrap();
+    let target = tmp.path().join("locked.sql");
+    fs::write(&target, b"dump").unwrap();
+
+    let holder = OpenOptions::new().read(true).open(&target).unwrap();
+    let cfg = InUseConfig {
+        check_sidecar_locks: false,
+        check_os_locks: true,
+        check_proc_fd: false,
+        min_idle_age: None,
+        stability_window: None,
+        ..InUseConfig::default()
+    };
+
+    let busy_report = InUseDetector::check_single(&target, &cfg);
+    assert!(busy_report.is_busy);
+    assert!(busy_report
+        .reasons
+        .iter()
+        .any(|r| matches!(r, InUseReason::WindowsShareViolation)));
+
+    drop(holder);
+
+    let free_report = InUseDetector::check_single(&target, &cfg);
+    assert!(!free_report.is_busy);
+    assert!(free_report.reasons.is_empty());
+}
+
 #[test]
 fn stability_window_detects_mtime_only_touch_without_size_change() {
     let tmp = TempDir::new().unwrap();
@@ -328,7 +359,7 @@ fn stability_window_detects_mtime_only_touch_without_size_change() {
         check_os_locks: false,
         check_proc_fd: false,
         min_idle_age: None,
-        stability_window: Some(Duration::from_millis(100)),
+        stability_window: Some(Duration::from_millis(200)),
         ..InUseConfig::default()
     };
 

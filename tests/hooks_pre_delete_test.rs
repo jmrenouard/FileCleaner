@@ -9,16 +9,22 @@ use filecleaner::{
     HookCandidate, HookConfig, HookFailureDisposition, HookFailurePolicy, HookRunner, HookVerdict,
     ProcessHookRunner,
 };
+#[cfg(unix)]
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+#[cfg(any(unix, windows))]
+use std::path::Path;
+use std::path::PathBuf;
+use std::time::Duration;
+#[cfg(any(unix, windows))]
+use std::time::Instant;
 use tempfile::TempDir;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+#[cfg(any(unix, windows))]
 fn write_executable_script(dir: &Path, name: &str, body: &str) -> PathBuf {
     let path = dir.join(name);
     fs::write(&path, body).unwrap();
@@ -133,7 +139,11 @@ set -euo pipefail
     assert!(captured.contains(&format!("ARG1={}", candidate_path.display())));
     assert!(captured.contains(&format!("ARG2={hostile_name}")));
     assert!(captured.contains("ARG3=incoming-etl:1234:2026-11-20T09:05:00Z"));
-    assert!(captured.contains(&format!("PWD={}", workdir.display())));
+    let canonical_workdir = fs::canonicalize(&workdir).unwrap_or_else(|_| workdir.clone());
+    assert!(
+        captured.contains(&format!("PWD={}", workdir.display()))
+            || captured.contains(&format!("PWD={}", canonical_workdir.display()))
+    );
     assert!(captured.contains(&format!("PATH={}", candidate_path.display())));
     assert!(captured.contains(&format!("NAME={hostile_name}")));
     assert!(captured.contains(&format!("DIR={}", candidate_dir.display())));
@@ -379,4 +389,188 @@ fn example_hook_scripts_execute_veto_and_verify_checksums() {
         runner.run(&candidate, &s3_hook, false).unwrap(),
         HookVerdict::SkippedByCode(42)
     );
+}
+
+#[test]
+fn hook_dry_run_empty_and_missing_command_honor_failure_policies() {
+    let tmp = TempDir::new().unwrap();
+    let candidate_path = tmp.path().join("artifact.sql");
+    fs::write(&candidate_path, b"payload").unwrap();
+    let candidate = make_candidate(candidate_path, "nightly");
+    let runner = ProcessHookRunner::new();
+
+    let missing_bin = tmp.path().join("nonexistent_filecleaner_hook_bin");
+    let mut hook = make_hook_config(missing_bin.to_string_lossy().into_owned(), vec![]);
+    assert_eq!(
+        runner.run(&candidate, &hook, true).unwrap(),
+        HookVerdict::SimulatedDryRun
+    );
+
+    hook.on_failure = HookFailurePolicy::AbortRule;
+    let (err, disp) = evaluate_hook(&runner, &candidate, &hook, false).unwrap_err();
+    assert_eq!(disp, HookFailureDisposition::AbortRule);
+    assert!(matches!(
+        err,
+        FileCleanerError::HookFailed {
+            exit_code: None,
+            ..
+        }
+    ));
+
+    hook.on_failure = HookFailurePolicy::WarnAndContinue;
+    let verdict = evaluate_hook(&runner, &candidate, &hook, false).unwrap();
+    assert!(matches!(verdict, HookVerdict::WarnAndContinue { .. }));
+
+    let empty_hook = make_hook_config("   ".to_string(), vec![]);
+    let (empty_err, empty_disp) =
+        evaluate_hook(&runner, &candidate, &empty_hook, false).unwrap_err();
+    assert_eq!(empty_disp, HookFailureDisposition::AbortFile);
+    assert!(matches!(empty_err, FileCleanerError::HookFailed { .. }));
+}
+
+#[cfg(windows)]
+#[test]
+fn hook_windows_direct_argv_env_vars_exit_codes_and_timeout() {
+    let tmp = TempDir::new().unwrap();
+    let pwned_sentinel = tmp.path().join("PWNED");
+    let out_dump = tmp.path().join("hook_capture.txt");
+
+    // Hostile NTFS-valid filename containing `;`, `&`, `$()`, quotes, and spaces.
+    let hostile_name = "backup; & touch PWNED $(id) 'quoted' .sql";
+    let candidate_dir = tmp.path().join("spool dir");
+    fs::create_dir_all(&candidate_dir).unwrap();
+    let candidate_path = candidate_dir.join(hostile_name);
+    fs::write(&candidate_path, b"payload").unwrap();
+
+    let script = write_executable_script(
+        tmp.path(),
+        "inspect.ps1",
+        r#"param([string]$a1, [string]$a2, [string]$a3)
+$lines = @(
+  "ARG1=$a1"
+  "ARG2=$a2"
+  "ARG3=$a3"
+  "PWD=$((Get-Location).Path)"
+  "PATH=$env:FILECLEANER_PATH"
+  "NAME=$env:FILECLEANER_NAME"
+  "DIR=$env:FILECLEANER_DIR"
+  "SIZE=$env:FILECLEANER_SIZE"
+  "MTIME=$env:FILECLEANER_MTIME_ISO"
+  "RULE=$env:FILECLEANER_RULE"
+  "ACTION=$env:FILECLEANER_ACTION"
+  "DRY=$env:FILECLEANER_DRY_RUN"
+  "CUSTOM=$env:CUSTOM_VAR"
+)
+[System.IO.File]::WriteAllLines($env:TEST_OUT_DUMP, $lines)
+"#,
+    );
+
+    let workdir = tmp.path().join("hook_wd");
+    fs::create_dir_all(&workdir).unwrap();
+    let pwned_in_wd = workdir.join("PWNED");
+
+    let mut hook = make_hook_config(
+        "powershell.exe".to_string(),
+        vec![
+            "-NoProfile".to_string(),
+            "-NonInteractive".to_string(),
+            "-ExecutionPolicy".to_string(),
+            "Bypass".to_string(),
+            "-File".to_string(),
+            script.to_string_lossy().into_owned(),
+            "{path}".to_string(),
+            "{name}".to_string(),
+            "{rule}:{size}:{mtime_iso}".to_string(),
+        ],
+    );
+    hook.timeout = Duration::from_secs(15);
+    hook.working_dir = Some(workdir.clone());
+    hook.env
+        .insert("CUSTOM_VAR".to_string(), "expected-val".to_string());
+    hook.env.insert(
+        "TEST_OUT_DUMP".to_string(),
+        out_dump.to_string_lossy().into_owned(),
+    );
+    hook.env
+        .insert("FILECLEANER_RULE".to_string(), "spoofed-rule".to_string());
+
+    let candidate = make_candidate(candidate_path.clone(), "incoming-etl");
+    let runner = ProcessHookRunner::new();
+    let verdict = runner.run(&candidate, &hook, false).unwrap();
+    assert_eq!(verdict, HookVerdict::Proceed);
+    assert!(
+        !pwned_sentinel.exists() && !pwned_in_wd.exists(),
+        "metacharacters in filename must never execute commands"
+    );
+
+    let captured = fs::read_to_string(&out_dump).unwrap();
+    assert!(captured.contains(&format!("ARG1={}", candidate_path.display())));
+    assert!(captured.contains(&format!("ARG2={hostile_name}")));
+    assert!(captured.contains("ARG3=incoming-etl:1234:2026-11-20T09:05:00Z"));
+    let pwd_line = captured
+        .lines()
+        .find_map(|line| line.strip_prefix("PWD="))
+        .expect("PWD line missing");
+    assert_eq!(
+        fs::canonicalize(pwd_line.trim()).unwrap(),
+        fs::canonicalize(&workdir).unwrap()
+    );
+    assert!(captured.contains(&format!("PATH={}", candidate_path.display())));
+    assert!(captured.contains(&format!("NAME={hostile_name}")));
+    assert!(captured.contains(&format!("DIR={}", candidate_dir.display())));
+    assert!(captured.contains("SIZE=1234"));
+    assert!(captured.contains("MTIME=2026-11-20T09:05:00Z"));
+    assert!(captured.contains("RULE=incoming-etl"));
+    assert!(captured.contains("ACTION=compress(Gzip)->move"));
+    assert!(captured.contains("DRY=false"));
+    assert!(captured.contains("CUSTOM=expected-val"));
+
+    // Exit 42 veto and failure policies via PowerShell subprocesses.
+    let mut veto_hook = make_hook_config(
+        "powershell.exe".to_string(),
+        vec![
+            "-NoProfile".to_string(),
+            "-NonInteractive".to_string(),
+            "-Command".to_string(),
+            "exit 42".to_string(),
+        ],
+    );
+    veto_hook.timeout = Duration::from_secs(15);
+    assert_eq!(
+        runner.run(&candidate, &veto_hook, false).unwrap(),
+        HookVerdict::SkippedByCode(42)
+    );
+
+    let mut fail_hook = make_hook_config(
+        "powershell.exe".to_string(),
+        vec![
+            "-NoProfile".to_string(),
+            "-NonInteractive".to_string(),
+            "-Command".to_string(),
+            "exit 17".to_string(),
+        ],
+    );
+    fail_hook.timeout = Duration::from_secs(15);
+    fail_hook.on_failure = HookFailurePolicy::AbortRule;
+    let (fail_err, disp) = evaluate_hook(&runner, &candidate, &fail_hook, false).unwrap_err();
+    assert_eq!(disp, HookFailureDisposition::AbortRule);
+    assert!(matches!(
+        fail_err,
+        FileCleanerError::HookFailed {
+            exit_code: Some(17),
+            ..
+        }
+    ));
+
+    // Timeout enforcement kills child process promptly.
+    let mut timeout_hook = make_hook_config(
+        "ping.exe".to_string(),
+        vec!["-n".to_string(), "10".to_string(), "127.0.0.1".to_string()],
+    );
+    timeout_hook.timeout = Duration::from_millis(150);
+    timeout_hook.on_failure = HookFailurePolicy::AbortFile;
+    let start = Instant::now();
+    let timeout_err = runner.run(&candidate, &timeout_hook, false).unwrap_err();
+    assert!(start.elapsed() < Duration::from_secs(3));
+    assert!(matches!(timeout_err, FileCleanerError::HookTimedOut { .. }));
 }

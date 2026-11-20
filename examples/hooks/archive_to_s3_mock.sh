@@ -18,6 +18,20 @@
 
 set -euo pipefail
 
+compute_sha256() {
+    local file_path="$1"
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$file_path" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$file_path" | awk '{print $1}'
+    elif command -v openssl >/dev/null 2>&1; then
+        openssl dgst -sha256 "$file_path" | awk '{print $NF}'
+    else
+        echo "hook error: no SHA-256 tool found (sha256sum, shasum, or openssl)" >&2
+        return 1
+    fi
+}
+
 TARGET_PATH="${FILECLEANER_PATH:?FILECLEANER_PATH must be set}"
 TARGET_NAME="${FILECLEANER_NAME:-$(basename "$TARGET_PATH")}"
 RULE_NAME="${FILECLEANER_RULE:-unknown}"
@@ -47,8 +61,8 @@ if [[ -n "$MOCK_BUCKET_DIR" ]]; then
     TMP_FILE="${DEST_FILE}.s3-tmp.$$"
 
     cp -p "$TARGET_PATH" "$TMP_FILE"
-    SRC_SUM="$(sha256sum "$TARGET_PATH" | awk '{print $1}')"
-    DST_SUM="$(sha256sum "$TMP_FILE" | awk '{print $1}')"
+    SRC_SUM="$(compute_sha256 "$TARGET_PATH")"
+    DST_SUM="$(compute_sha256 "$TMP_FILE")"
 
     if [[ "$SRC_SUM" != "$DST_SUM" ]]; then
         rm -f "$TMP_FILE"

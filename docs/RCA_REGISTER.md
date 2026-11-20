@@ -25,6 +25,65 @@
 
 ---
 
+### RCA-002 — Cross-OS GitHub Actions CI Failures & Warnings on `windows-latest` and `macos-latest` (`PR #15` / Run `44712069431`)
+- **Date / Linked Action**: `2026-11-20` (`ACT-005` / Issue `#14` / PR `#15`)
+- **Observed Symptom**:
+  - While `ubuntu-latest` passed `fmt-and-clippy`, `coverage-gate >= 90%`, and `cross-os-test` (`94/94`), GitHub Actions CI Run `44712069431` failed on `windows-latest` and `macos-latest` with:
+    1. `src/in_use.rs:956`: `assertion failed: direct_missing.fatal_error.is_some()` on both Windows and macOS.
+    2. `src/scanner.rs:909`: `assertion left != right failed` (`resolved_ts == modified_ts`) on `macos-latest`.
+    3. `src/scanner.rs:982`: `overflow when adding duration to SystemTime` panic on `windows-latest`.
+    4. Windows compiler warnings (`src/daemon.rs:514-515` unused `mut signal_sent` and `target_pid`; `tests/hooks_pre_delete_test.rs` unused imports/helpers; `tests/retention_age_size_count_test.rs:6` unused `FileCleanerError`) under `#[cfg(unix)]`-gated test/signal paths.
+- **Root Cause Analysis (5 Whys)**:
+  1. *Why did `src/in_use.rs:956` fail on Windows/macOS?* Because `OsLockProbe::check_proc_fd_batch` only scans `/proc/*/fd` on `#[cfg(target_os = "linux")]` and returns an empty `ProcFdProbeOutcome` on non-Linux platforms, yet the test unconditionally asserted `fatal_error.is_some()`.
+  2. *Why did `src/scanner.rs:909` fail on macOS APFS?* Because APFS clamps `st_birthtime` backward to `mtime` whenever `mtime` is explicitly set older than `birthtime` (`1_500_000_000` in 2017 vs. 2026 creation time), making `created_ts == modified_ts`.
+  3. *Why did `src/scanner.rs:982` panic on Windows?* Because Windows `SystemTime` (`FILETIME`) caps out around year 30828 AD, so unchecked `UNIX_EPOCH + Duration::from_secs(u64::MAX / 2)` overflows inside `SystemTime::add`.
+  4. *Why were Windows-specific warnings and handle-lifetime subtleties missed before pushing?* Because local verification ran exclusively on WSL2 Linux (`ubuntu-latest`) and `cross-os-test` in `.github/workflows/ci.yml` ran `cargo test --all-targets` without `cargo clippy --all-targets -- -D warnings`.
+- **Applied Change / Fix**:
+  - [`src/in_use.rs`](../src/in_use.rs): Gated `direct_missing.fatal_error.is_some()` with `#[cfg(target_os = "linux")]` and asserted empty/non-fatal outcome under `#[cfg(not(target_os = "linux"))]`.
+  - [`src/scanner.rs`](../src/scanner.rs): Updated `scan_rule_time_basis_created_succeeds_or_fails_without_fallback` to advance `mtime` into the future (`>= 1_900_000_000`) so APFS/NTFS/ext4 preserve distinct `birthtime`, and switched overflow tests in `system_time_overflow_and_lexical_path_resolution_handle_edge_cases` to `checked_add` / `checked_sub`.
+  - [`src/daemon.rs`](../src/daemon.rs): Replaced `mut signal_sent` / `target_pid` in `daemon_stop` with clean `#[cfg(unix)]` / `#[cfg(not(unix))]` branches, added bounded Windows `PermissionDenied` retry on atomic state rename, scoped file-handle drops before daemon deletions, and enabled cross-OS stop-file shutdown coverage.
+  - Integration Tests ([`tests/hooks_pre_delete_test.rs`](../tests/hooks_pre_delete_test.rs), [`tests/retention_age_size_count_test.rs`](../tests/retention_age_size_count_test.rs), [`tests/in_use_detection_test.rs`](../tests/in_use_detection_test.rs), [`tests/daemon_and_cli_test.rs`](../tests/daemon_and_cli_test.rs)): Gated Unix-only imports/helpers cleanly, added cross-platform and `#[cfg(windows)]` hook (`powershell.exe` / `ping.exe`) and `share_mode(0)` lock tests, and removed Notify/mtime timing races.
+  - [`.github/workflows/ci.yml`](../.github/workflows/ci.yml): Added `components: clippy` and `cargo clippy --all-targets -- -D warnings` to `cross-os-test` across all 3 runner OSes.
+- **Result & Non-Regression Test**:
+  - Verified locally in WSL2 (`cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo llvm-cov --fail-under-lines 90`) and queued for multi-OS GitHub Actions re-verification across `ubuntu-latest`, `windows-latest`, and `macos-latest`.
+
+---
+
+### RCA-003 — `windows-latest` `clippy::needless_bool` and `macos-latest` Zombie `is_pid_alive` Timeout (`PR #15` / Run `44714006240`)
+- **Date / Linked Action**: `2026-11-20` (`ACT-005` / Issue `#14` / PR `#15`)
+- **Observed Symptom**:
+  - GitHub Actions CI Run `44714006240` passed all three `ubuntu-latest` jobs (`fmt-and-clippy`, `coverage-gate >= 90%`, `cross-os-test`), passed `57/57` unit tests and `7/8` integration suites on `macos-latest`, and surfaced two platform-specific defects:
+    1. `windows-latest` (`cargo clippy --all-targets -- -D warnings`): failed on `src/actions.rs:914` with `clippy::needless_bool` (`this if guard returns a bool literal and is followed by another`).
+    2. `macos-latest` (`tests/daemon_and_cli_test.rs:643`): `cli_daemon_subprocess_lifecycle_notify_status_duplicate_pid_stop_and_templates` timed out in `filecleaner daemon stop --timeout 10s` (`timed out after 10000ms waiting for daemon PID ... to stop`).
+- **Root Cause Analysis (5 Whys)**:
+  1. *Why did `src/actions.rs:914` trigger `clippy::needless_bool` on Windows?* Because `#[cfg(unix)]` compiled out the `libc::EXDEV` branch on Windows, collapsing `is_cross_device_error` to `if err.kind() == io::ErrorKind::CrossesDevices { return true; } false`.
+  2. *Why did `daemon stop` time out on macOS?* Because the test spawns `filecleaner daemon run` as a child process and holds its un-waited `std::process::Child` handle until after `daemon stop` returns; when the daemon exits, it remains a zombie (`Z`) until reaped. On Linux `is_linux_zombie` checks `/proc/<pid>/stat`, whereas on macOS `kill(pid, 0)` continued returning `0` on the zombie process.
+  3. *Why did `is_pid_alive` on Windows use `tasklist.exe`?* Because no native Win32 handle check was wired, risking unnecessary process-spawn overhead and differing exit semantics for un-waited `Child` handles (`STILL_ACTIVE`).
+- **Applied Change / Fix**:
+  - [`src/actions.rs`](../src/actions.rs): Rewrote `is_cross_device_error` with clean `#[cfg(unix)]` and `#[cfg(not(unix))]` boolean expressions.
+  - [`src/daemon.rs`](../src/daemon.rs): Added `is_non_linux_unix_zombie` (`ps -o stat= -p <pid>`) under `#[cfg(all(unix, not(target_os = "linux")))]` so macOS/BSD zombies report `false`, and replaced `tasklist.exe` under `#[cfg(windows)]` with direct `kernel32` FFI (`OpenProcess` + `GetExitCodeProcess` checking `STILL_ACTIVE == 259` + `CloseHandle`).
+  - Local Cross-Target Verification: Added `x86_64-pc-windows-gnu` and `aarch64-apple-darwin` targets in WSL2 to run `cargo clippy --lib --bins --tests --target <triple> -- -D warnings` locally prior to pushing.
+- **Result & Non-Regression Test**:
+  - Cross-target Clippy (`x86_64-pc-windows-gnu`, `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu`) passed with zero warnings, alongside full WSL2 `cargo fmt`, `cargo test`, and `cargo llvm-cov --fail-under-lines 90`.
+
+---
+
+### RCA-004 — macOS `/var` -> `/private/var` `TempDir` Symlink Divergence in `hooks_pre_delete_test.rs:142` and Stock macOS `shasum` Portability (`PR #15` / Run `44715379817`)
+- **Date / Linked Action**: `2026-11-20` (`ACT-005` / Issue `#14` / PR `#15`)
+- **Observed Symptom**:
+  - GitHub Actions CI Run `44715379817` passed 4 of 5 jobs (`Format & Clippy`, `Line Coverage Gate >= 90%`, `Cross-OS Test Suite (ubuntu-latest)`, and `Cross-OS Test Suite (windows-latest)` — including strict `cargo clippy --all-targets -- -D warnings` on Windows), passed `57/57` unit tests and `7/8` integration suites (including `daemon_and_cli_test` `6/6`) on `macos-latest`, and failed on a single assertion in [`tests/hooks_pre_delete_test.rs`](../tests/hooks_pre_delete_test.rs):
+    - `hook_direct_argv_blocks_shell_injection_and_passes_all_env_vars` (`tests/hooks_pre_delete_test.rs:142`): `PWD=` comparison failed on `macos-latest`.
+- **Root Cause Analysis (5 Whys)**:
+  1. *Why did `captured.contains(&format!("PWD={}", workdir.display()))` fail on macOS?* Because on macOS `/var` is a symlink to `/private/var`; `tempfile::TempDir` creates paths under `/var/folders/...`, whereas `bash`'s `$(pwd)` inside the hook script resolves the physical path `/private/var/folders/...`.
+  2. *Why might stock macOS environments also fail running `examples/hooks/*.sh` without GNU coreutils?* Because bare macOS ships BSD `shasum -a 256` (and `openssl`) rather than GNU `sha256sum`.
+- **Applied Change / Fix**:
+  - [`tests/hooks_pre_delete_test.rs`](../tests/hooks_pre_delete_test.rs): Updated the `PWD=` assertion in `hook_direct_argv_blocks_shell_injection_and_passes_all_env_vars` to accept either `workdir.display()` or `fs::canonicalize(&workdir)`.
+  - [`examples/hooks/verify_checksum_before_delete.sh`](../examples/hooks/verify_checksum_before_delete.sh) & [`examples/hooks/archive_to_s3_mock.sh`](../examples/hooks/archive_to_s3_mock.sh): Added a `compute_sha256()` helper that checks `sha256sum`, falls back to `shasum -a 256` (stock macOS/BSD), and falls back to `openssl dgst -sha256`.
+- **Result & Non-Regression Test**:
+  - Verified locally in WSL2 (`cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings` across Linux, `x86_64-pc-windows-gnu`, and `aarch64-apple-darwin`, `cargo test` `95/95` including `example_hook_scripts_execute_veto_and_verify_checksums`, and `cargo llvm-cov --fail-under-lines 90`).
+
+---
+
 ## 2. Technical Dead-Ends & Abandoned Leads (`IMP`)
 
 ### IMP-001 — C/C++ `-sys` Compression Bindings (`zstd-sys`, `liblz4-sys`, `bzip2-sys`, `zlib-ng-sys`) vs. Pure-Rust Compression Crates

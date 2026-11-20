@@ -69,10 +69,10 @@ FileCleaner v1.0.0 forbids C/C++ `-sys` build dependencies (`openssl-sys`, `libz
 
 - **CLI & Config**: `clap` (v4 derive), `serde`, `serde_json`, `toml`, `serde_yaml_ng`, `thiserror`, `chrono` (with `serde`)
 - **Traversal & Matching**: `walkdir`, `globset`, `regex`
-- **Compression & Integrity**: `flate2` (default pure-Rust `miniz_oxide`), `lz4_flex`, `brotli`, `zip` (`default-features = false`, pure-Rust `deflate`), `sha2`, `filetime`
+- **Compression & Integrity**: `flate2` (default pure-Rust `miniz_oxide`), `lz4_flex`, `brotli`, `zip` (`default-features = false`, pure-Rust `deflate`), `sha2`, plus Rust stdlib `std::fs::FileTimes` (`File::set_times`)
 - **Daemon & OS Integration**: `notify`, `ctrlc`, and target-gated `#[cfg(unix)] libc` plus standard Windows `OpenOptionsExt::share_mode(0)`.
 
-This stack compiles cleanly across all 9 release targets: `x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-gnu`, `aarch64-unknown-linux-musl`, `x86_64-apple-darwin`, `aarch64-apple-darwin`, `x86_64-pc-windows-msvc`, `x86_64-pc-windows-gnu`, and `aarch64-pc-windows-msvc`.
+This stack compiles cleanly across all 9 release targets: `x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-gnu`, `aarch64-unknown-linux-musl`, `armv7-unknown-linux-gnueabihf`, `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc`, `aarch64-apple-darwin`, and `x86_64-apple-darwin`.
 
 ---
 
@@ -683,7 +683,7 @@ For each candidate $f \in E$ cleared by all gates and hooks, FileCleaner execute
 
 1. Format candidate timestamp $t(f)$ using `rule.rename_template` (`chrono` `strftime` pattern, default `%Y%m%d_%H%M%S`), yielding `<stem>_<formatted><ext>` (or pattern expansion) inside the same directory.
 2. **Collision Handling**: Never silently clobber an existing destination; fail cleanly (`FileCleanerError::Io`) or disambiguate with deterministic numeric suffix when enabled without silent overwrite.
-3. Preserve original `mtime` (`filetime::set_file_mtime`) and update `WorkingTarget`.
+3. Preserve original `mtime` (`std::fs::FileTimes` via `File::set_times`) and update `WorkingTarget`.
 
 #### 7.2.2 `Compress` (`compression`, `compression_level`, `compress_remove_source`, `compress_overwrite`)
 
@@ -701,7 +701,7 @@ Atomic execution sequence:
 1. Verify target `<path><suffix>` does not already exist (unless `rule.compress_overwrite == true`).
 2. Stream source bytes into staged `<dest>.fc-tmp`.
 3. Finalize encoder stream and invoke `sync_all()`.
-4. Copy original `atime`/`mtime` via `filetime::set_file_times` onto `<dest>.fc-tmp`.
+4. Copy original `atime`/`mtime` via `std::fs::FileTimes` (`File::set_times`) onto `<dest>.fc-tmp`.
 5. Atomically rename `<dest>.fc-tmp` $\rightarrow$ `<dest>`.
 6. Only after step 5 succeeds, if `rule.compress_remove_source == true`, unlink original source file and update `WorkingTarget` to `<dest>`. On any failure before step 5, remove `<dest>.fc-tmp` and leave source intact.
 
@@ -715,7 +715,7 @@ Atomic execution sequence:
    - Flush and `sync_all()` `<dest>.fc-tmp`.
    - Re-open `<dest>.fc-tmp` from disk and compute an independent verification `Sha256` digest $H_{\text{verify}}$ and size $L_{\text{verify}}$.
    - Verify $H_{\text{src}} = H_{\text{verify}} \land L_{\text{src}} = L_{\text{verify}}$. On any mismatch, delete `<dest>.fc-tmp`, leave `src` untouched, and abort with `FileCleanerError::IntegrityMismatch`.
-   - Restore original `atime`/`mtime` (`filetime::set_file_times`) and Unix mode permissions on `<dest>.fc-tmp`.
+   - Restore original `atime`/`mtime` (`std::fs::FileTimes` via `File::set_times`) and Unix mode permissions on `<dest>.fc-tmp`.
    - Atomically rename `<dest>.fc-tmp` $\rightarrow$ `<dest>`.
    - Finally unlink `src` and record `sha256` digest in JSONL audit log.
 
@@ -820,15 +820,15 @@ Global options accepted before subcommands: `-c, --config <PATH>`, `--dry-run`, 
 
 | Subcommand | Purpose & Key Flags | Mutation Allowed |
 | :--- | :--- | :--- |
-| `filecleaner run` | Execute single synchronous sweep. Flags: `--rule <NAME>...`, `--dry-run`, `--fail-on-freeze`, `--strict-constraints`, `--json`. | Live (unless `--dry-run`) |
-| `filecleaner plan` | Strictly read-only execution plan (forces `dry_run = true`). Flags: `--rule <NAME>...`, `--fail-on-freeze`, `--strict-constraints`, `--json`. | **Never** |
-| `filecleaner check-in-use <PATH>` | Run Multi-Probe In-Use Matrix on a single file. Flags: `--idle-age <DUR>`, `--stability <DUR>`, `--sidecar-ext <EXT>...`, `--no-flock`, `--no-proc-fd`, `--no-windows-share`, `--json`. | **Never** |
-| `filecleaner validate` | Parse config, byte/duration units, regex/globs, and all `INV-CFG-*` invariants. Flags: `--json`. | **Never** |
-| `filecleaner init` | Generate annotated starter config (`--output <PATH>`, `--format toml\|yaml`, `--force`) with safe defaults (`dry_run = true`, `min_keep_files = 3`). | Only creates config file |
-| `filecleaner daemon run` | Start foreground daemon (`--mode interval\|notify\|hybrid`, `--max-sweeps <N>`, `--dry-run`). | Per sweep mode |
-| `filecleaner daemon status` | Inspect `pid_file` liveness and `state_file` metrics (`--json`). | **Never** |
-| `filecleaner daemon stop` | Create `stop_file` (and optionally send `SIGTERM` on Unix), wait up to `--timeout <DUR>` for PID exit. | Writes/cleans `stop_file` |
-| `filecleaner daemon service-template` | Emit ready-to-install OS service definition (`--init-system systemd\|launchd\|windows-task`, `--config <PATH>`, `--user`). | Stdout / `--output` only |
+| `filecleaner run` (alias `clean`) | Execute single synchronous sweep via `--config` or ad-hoc `--dir`. Flags: `--rule <NAME>...`, `--dry-run`, `--fail-on-freeze`, `--strict-constraints`, `--dir <DIR>`, `--include <GLOB>...`, `--exclude <GLOB>...`, `--recursive`, `--max-files <N>`, `--max-age <DUR>`, `--max-size <BYTES>`, `--min-keep <N>`, `--min-valid-backup-bytes <BYTES>`, `--require-newer-within <DUR>`, `--freeze-before-date <TS>`, `--min-idle-age <DUR>`, `--rename-by-date`, `--rename-template <FMT>`, `--compress <CODEC>`, `--move-to <DIR>`, `--trash-dir <DIR>`, `--pre-hook <CMD>`, `--json`. | Live (unless `--dry-run`) |
+| `filecleaner plan` | Strictly read-only execution plan (forces `dry_run = true`). Supports all `run` config and ad-hoc flags. | **Never** |
+| `filecleaner check-in-use <PATH...>` | Run Multi-Probe In-Use Matrix on one or more paths. Flags: `--idle-age <DUR>`, `--stability <DUR>`, `--sidecar-ext <EXT>...`, `--no-flock`, `--no-proc-fd`, `--no-windows-share`, `--json`. | **Never** |
+| `filecleaner validate [PATH]` | Parse config (positional `<PATH>` or `-c/--config <PATH>`), byte/duration units, regex/globs, and all `INV-CFG-*` invariants. Flags: `--json`. | **Never** |
+| `filecleaner init` | Generate annotated starter config (`-o/--output <PATH>`, `--profile backups\|logs\|spool`, `--format toml\|yaml`, `--force`) with safe defaults (`dry_run = true`, `min_keep_files = 3`). | Only creates config file |
+| `filecleaner daemon run` | Start foreground daemon (`--mode interval\|notify\|hybrid`, `--max-sweeps <N>`, `--fail-on-freeze`, `--strict-constraints`, `--dry-run`). | Per sweep mode |
+| `filecleaner daemon status` | Inspect `pid_file` liveness and `state_file` metrics (`--pid-file <PATH>`, `--state-file <PATH>`, `--json`). | **Never** |
+| `filecleaner daemon stop` | Create `stop_file` (and send `SIGTERM` on Unix), wait up to `--timeout <DUR>` (default `10s`) for PID exit (`--pid-file <PATH>`, `--stop-file <PATH>`). | Writes/cleans `stop_file` |
+| `filecleaner daemon service-template` | Emit ready-to-install OS service definition (`--init-system systemd\|launchd\|windows-task` [alias `--target`], `-c/--config <PATH>`, `--user <USER>`, `-o/--output <PATH>`). | Stdout / `--output` only |
 
 ### 9.2 Deterministic Exit Codes
 

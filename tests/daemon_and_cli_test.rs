@@ -548,6 +548,9 @@ check_proc_fd = false
         .success();
     assert!(!f_seed.exists());
     assert!(f_keep.exists());
+    // Age `f_keep` before starting the Notify daemon so writing `new_arrival.dat`
+    // triggers a race-free deterministic sweep.
+    set_mtime_unix(&f_keep, Utc::now().timestamp() - 300);
 
     // 2. Spawn live foreground daemon in Notify mode.
     let bin_path = assert_cmd::cargo::cargo_bin("filecleaner");
@@ -556,7 +559,7 @@ check_proc_fd = false
         .spawn()
         .unwrap();
 
-    let wait_idle_deadline = Instant::now() + Duration::from_secs(5);
+    let wait_idle_deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if let Ok(raw) = fs::read_to_string(&state_file) {
             if let Ok(st) = serde_json::from_str::<DaemonState>(&raw) {
@@ -603,17 +606,18 @@ check_proc_fd = false
         .assert()
         .code(4);
 
-    // 5. Trigger Notify sweep by writing a new file (`seed_keep.dat` becomes older than `new_arrival.dat`).
+    // 5. Trigger Notify sweep by writing a new file (`seed_keep.dat` is older than `new_arrival.dat`).
     let new_arrival = watch_dir.join("new_arrival.dat");
     fs::write(&new_arrival, b"fresh").unwrap();
-    set_mtime_unix(&f_keep, Utc::now().timestamp() - 300);
 
-    let wait_sweep_deadline = Instant::now() + Duration::from_secs(5);
+    let wait_sweep_deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let st: DaemonState =
-            serde_json::from_str(&fs::read_to_string(&state_file).unwrap()).unwrap();
-        if st.sweeps_completed >= 1 && st.status == DaemonStatus::Idle {
-            break;
+        if let Ok(raw) = fs::read_to_string(&state_file) {
+            if let Ok(st) = serde_json::from_str::<DaemonState>(&raw) {
+                if st.sweeps_completed >= 1 && st.status == DaemonStatus::Idle {
+                    break;
+                }
+            }
         }
         assert!(
             Instant::now() < wait_sweep_deadline,
@@ -633,7 +637,7 @@ check_proc_fd = false
             "--config",
             cfg_path.to_str().unwrap(),
             "--timeout",
-            "5s",
+            "10s",
         ])
         .assert()
         .code(0);
