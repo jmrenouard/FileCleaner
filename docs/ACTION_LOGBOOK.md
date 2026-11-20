@@ -29,6 +29,7 @@
   - Governance: Updated [`docs/ACTION_LOGBOOK.md`](ACTION_LOGBOOK.md).
 - **Result**:
   - Local verification & `@verifier` audit: `cargo fmt --all -- --check` PASS, `cargo clippy --all-targets -- -D warnings` PASS (`0` warnings), `cargo test` PASS (`57` unit + `37` integration across 8 suites = `94 passed; 0 failed`), `cargo llvm-cov --all-targets --workspace --summary-only --fail-under-lines 90` PASS (`92.67%` line coverage across `8,075` lines), `0` LaTeX/Markdown integrity errors across all repository `.md` files.
+  - GitHub Tracking: Issue `#14` / PR `#15` (`ci/issue-14-multiarch-ci-bilingual-docs-v1`).
 
 ### ACT-004 — Implement Sweep Engine Orchestrator, Daemon Mode, Full CLI Subcommands, and Governance Test Suite (`Issue #12`)
 - **Timestamp**: `2026-11-20T10:22:44Z`
