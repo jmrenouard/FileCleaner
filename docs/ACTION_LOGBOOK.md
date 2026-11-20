@@ -17,6 +17,25 @@
 
 ## 2. Completed Actions (`COMPLETED`)
 
+### ACT-002 — Implement Directory Scanner, Multi-Probe In-Use Detector, and Backup-Guarded Retention Engine (`Issue #7`)
+- **Timestamp**: `2026-11-20T09:57:09Z`
+- **Issue / Branch**: `#7` (`feat/issue-7-retention-safety-inuse`)
+- **Request**: Implement the Wave 2 core scanning, 6-layer active-writer detection, and mathematical backup-guarded retention planner (`src/scanner.rs`, `src/in_use.rs`, `src/policy.rs`) with full unit and integration test suites (`tests/retention_age_size_count_test.rs`, `tests/backup_guards_test.rs`, `tests/in_use_detection_test.rs`).
+- **Changes**:
+  - [`.gitignore`](../.gitignore): Added `/.worktrees/` exclusion so isolated parallel agent worktrees stay untracked.
+  - [`src/scanner.rs`](../src/scanner.rs): Added `Clock` (`SystemClock`, `FixedClock`), `ScannedFile`, `ScanReport`, and `Scanner::scan_rule` enforcing non-symlink default traversal, `.fc-tmp`/control-file exclusion, glob/regex include/exclude precedence, byte-range bounds, fail-closed `Created`/`FilenameDate` timestamp resolution, and deterministic newest-first ordering.
+  - [`src/in_use.rs`](../src/in_use.rs): Added `InUseReason`, `InUseReport`, `InUseBatchResult`, injectable `LockProbe` + `OsLockProbe` (Unix `flock`, Linux `/proc/*/fd` inode scan with fail-closed `EACCES` diagnostics, Windows `share_mode(0)`), `ProcFdProbeOutcome`, `InUseDetector::check_batch` (with batched single-sleep two-point `stability_window` & future-mtime fail-closed `min_idle_age`), and `check_single` / `check_single_with`.
+  - [`src/policy.rs`](../src/policy.rs): Added `RuleOutcome` (`Ok`, `Frozen`, `Constrained`), `DecisionKind`, `CandidateDecision`, `SweepPlan`, and `RetentionEngine::plan` implementing `F_valid`, staleness dead-man's-switch freezes, unconditional `min_keep_files` floor, busy-file exclusion, `CombineMode::{Any, All}`, and `EvictionOrder::{OldestFirst, LargestFirst}`.
+  - [`src/lib.rs`](../src/lib.rs): Exported `in_use`, `policy`, and `scanner` modules with public re-exports.
+  - Integration Tests: [`tests/retention_age_size_count_test.rs`](../tests/retention_age_size_count_test.rs), [`tests/backup_guards_test.rs`](../tests/backup_guards_test.rs), and [`tests/in_use_detection_test.rs`](../tests/in_use_detection_test.rs).
+  - Governance Registers: Updated [`docs/ACTION_LOGBOOK.md`](ACTION_LOGBOOK.md) and [`docs/RCA_REGISTER.md`](RCA_REGISTER.md) (`IMP-003`).
+- **Result**:
+  - `cargo fmt --all -- --check`: PASS (`0` diffs).
+  - `cargo clippy --all-targets -- -D warnings`: PASS (`0` warnings).
+  - `cargo test`: PASS (`32` unit tests + `16` integration tests = `48 passed; 0 failed`).
+  - `cargo llvm-cov --all-targets --workspace --summary-only --fail-under-lines 90`: PASS (`92.00%` line coverage across `3,112` lines: `config.rs` `94.61%`, `error.rs` `100.00%`, `in_use.rs` `87.23%`, `main.rs` `100.00%`, `policy.rs` `92.38%`, `scanner.rs` `90.79%`).
+  - Independent Audit: Approved by `@verifier`.
+
 ### ACT-001 — Establish Governance, Bilingual Specifications, Brand Identity, and Cargo v1.0.0 Contract (`Issue #1`)
 - **Timestamp**: `2026-11-20T09:26:41Z`
 - **Issue / Branch**: `#1` (`docs/issue-1-governance-specs-branding`)
