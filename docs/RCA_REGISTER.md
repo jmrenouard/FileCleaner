@@ -68,6 +68,22 @@
 
 ---
 
+### RCA-004 — macOS `/var` -> `/private/var` `TempDir` Symlink Divergence in `hooks_pre_delete_test.rs:142` and Stock macOS `shasum` Portability (`PR #15` / Run `44715379817`)
+- **Date / Linked Action**: `2026-11-20` (`ACT-005` / Issue `#14` / PR `#15`)
+- **Observed Symptom**:
+  - GitHub Actions CI Run `44715379817` passed 4 of 5 jobs (`Format & Clippy`, `Line Coverage Gate >= 90%`, `Cross-OS Test Suite (ubuntu-latest)`, and `Cross-OS Test Suite (windows-latest)` — including strict `cargo clippy --all-targets -- -D warnings` on Windows), passed `57/57` unit tests and `7/8` integration suites (including `daemon_and_cli_test` `6/6`) on `macos-latest`, and failed on a single assertion in [`tests/hooks_pre_delete_test.rs`](../tests/hooks_pre_delete_test.rs):
+    - `hook_direct_argv_blocks_shell_injection_and_passes_all_env_vars` (`tests/hooks_pre_delete_test.rs:142`): `PWD=` comparison failed on `macos-latest`.
+- **Root Cause Analysis (5 Whys)**:
+  1. *Why did `captured.contains(&format!("PWD={}", workdir.display()))` fail on macOS?* Because on macOS `/var` is a symlink to `/private/var`; `tempfile::TempDir` creates paths under `/var/folders/...`, whereas `bash`'s `$(pwd)` inside the hook script resolves the physical path `/private/var/folders/...`.
+  2. *Why might stock macOS environments also fail running `examples/hooks/*.sh` without GNU coreutils?* Because bare macOS ships BSD `shasum -a 256` (and `openssl`) rather than GNU `sha256sum`.
+- **Applied Change / Fix**:
+  - [`tests/hooks_pre_delete_test.rs`](../tests/hooks_pre_delete_test.rs): Updated the `PWD=` assertion in `hook_direct_argv_blocks_shell_injection_and_passes_all_env_vars` to accept either `workdir.display()` or `fs::canonicalize(&workdir)`.
+  - [`examples/hooks/verify_checksum_before_delete.sh`](../examples/hooks/verify_checksum_before_delete.sh) & [`examples/hooks/archive_to_s3_mock.sh`](../examples/hooks/archive_to_s3_mock.sh): Added a `compute_sha256()` helper that checks `sha256sum`, falls back to `shasum -a 256` (stock macOS/BSD), and falls back to `openssl dgst -sha256`.
+- **Result & Non-Regression Test**:
+  - Verified locally in WSL2 (`cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings` across Linux, `x86_64-pc-windows-gnu`, and `aarch64-apple-darwin`, `cargo test` `95/95` including `example_hook_scripts_execute_veto_and_verify_checksums`, and `cargo llvm-cov --fail-under-lines 90`).
+
+---
+
 ## 2. Technical Dead-Ends & Abandoned Leads (`IMP`)
 
 ### IMP-001 — C/C++ `-sys` Compression Bindings (`zstd-sys`, `liblz4-sys`, `bzip2-sys`, `zlib-ng-sys`) vs. Pure-Rust Compression Crates

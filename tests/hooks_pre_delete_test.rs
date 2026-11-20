@@ -139,7 +139,11 @@ set -euo pipefail
     assert!(captured.contains(&format!("ARG1={}", candidate_path.display())));
     assert!(captured.contains(&format!("ARG2={hostile_name}")));
     assert!(captured.contains("ARG3=incoming-etl:1234:2026-11-20T09:05:00Z"));
-    assert!(captured.contains(&format!("PWD={}", workdir.display())));
+    let canonical_workdir = fs::canonicalize(&workdir).unwrap_or_else(|_| workdir.clone());
+    assert!(
+        captured.contains(&format!("PWD={}", workdir.display()))
+            || captured.contains(&format!("PWD={}", canonical_workdir.display()))
+    );
     assert!(captured.contains(&format!("PATH={}", candidate_path.display())));
     assert!(captured.contains(&format!("NAME={hostile_name}")));
     assert!(captured.contains(&format!("DIR={}", candidate_dir.display())));
