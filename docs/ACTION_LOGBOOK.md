@@ -33,4 +33,4 @@
   - `cargo test`: PASS (`13` unit tests in `src/lib.rs` + `1` integration test in `tests/cli_validate.rs` = `14 passed; 0 failed`).
   - `cargo llvm-cov --summary-only --fail-under-lines 90`: PASS (`94.80%` line coverage across `1,269` lines: `src/config.rs` `94.61%`, `src/error.rs` `100.00%`, `src/main.rs` `100.00%`).
   - Spec validation: All canonical TOML/YAML examples in `docs/en/SPECIFICATIONS.md` §2.6 verified with `filecleaner validate` (exit `0`).
-  - GitHub tracking: Issue `#1` / Pull Request pending merge.
+  - GitHub tracking: Issue `#1` / PR `#2` (`docs/issue-1-governance-specs-branding`).
