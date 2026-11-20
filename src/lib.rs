@@ -6,6 +6,9 @@ pub mod audit;
 pub mod config;
 pub mod error;
 pub mod hooks;
+pub mod in_use;
+pub mod policy;
+pub mod scanner;
 
 pub use actions::{
     compute_file_sha256, verify_file_sha256, ActionExecutor, ActionReport, WorkingTarget,
@@ -23,3 +26,9 @@ pub use hooks::{
     evaluate_hook, expand_hook_args, format_action_summary, hook_error_disposition, HookCandidate,
     HookFailureDisposition, HookRunner, HookVerdict, ProcessHookRunner,
 };
+pub use in_use::{
+    InUseBatchResult, InUseDetector, InUseReason, InUseReport, LockProbe, OsLockProbe,
+    ProcFdProbeOutcome,
+};
+pub use policy::{CandidateDecision, DecisionKind, RetentionEngine, RuleOutcome, SweepPlan};
+pub use scanner::{Clock, FixedClock, ScanReport, ScannedFile, Scanner, SystemClock};
