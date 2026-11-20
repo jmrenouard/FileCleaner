@@ -35,6 +35,7 @@
   - `cargo test`: PASS (`32` unit tests + `16` integration tests = `48 passed; 0 failed`).
   - `cargo llvm-cov --all-targets --workspace --summary-only --fail-under-lines 90`: PASS (`92.00%` line coverage across `3,112` lines: `config.rs` `94.61%`, `error.rs` `100.00%`, `in_use.rs` `87.23%`, `main.rs` `100.00%`, `policy.rs` `92.38%`, `scanner.rs` `90.79%`).
   - Independent Audit: Approved by `@verifier`.
+  - GitHub Tracking: Issue `#7` / PR `#10` (`feat/issue-7-retention-safety-inuse`).
 
 ### ACT-001 — Establish Governance, Bilingual Specifications, Brand Identity, and Cargo v1.0.0 Contract (`Issue #1`)
 - **Timestamp**: `2026-11-20T09:26:41Z`
