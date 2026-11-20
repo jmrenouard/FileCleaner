@@ -17,6 +17,20 @@
 
 ## 2. Completed Actions (`COMPLETED`)
 
+### ACT-009 — Release `v1.0.1` and Publish Multi-Arch Docker Hub Image (`jmrenouard/filecleaner`) (`Issue #22`)
+
+- **Date / Time (ISO)**: `2026-11-20T22:23:00Z`
+- **Issue / Branch**: `#22` (`chore/issue-22-release-v1.0.1-dockerhub`)
+- **Request**: Prepare and ship GitHub Release `v1.0.1` alongside hardened multi-architecture (`linux/amd64`, `linux/arm64`) Docker Hub publishing (`jmrenouard/filecleaner`) modeled on `jmrenouard/cis_benchmarks_tools`.
+- **Changes**:
+  - Provisioned `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` (dedicated repo-admin PAT saved in KeePass `Dev-Secrets`) in `jmrenouard/FileCleaner` repository secrets via in-memory Python injection (zero plaintext output).
+  - Created multi-stage hardened [`Dockerfile`](../Dockerfile) (`rust:1.100.0-bookworm` builder -> non-root `debian:bookworm-slim` UID/GID `10001` `fcuser:fcgroup`, `VOLUME` mountpoints, `HEALTHCHECK`, exec entrypoint) and [`.dockerignore`](../.dockerignore), verified with `lint_dockerfile.py --fail-on info` (`HIGH 0  WARN 0  INFO 0`).
+  - Created SHA-pinned multi-platform publishing workflow [`.github/workflows/docker-publish.yml`](../.github/workflows/docker-publish.yml) targeting `jmrenouard/filecleaner` (`latest`, `v1.0.1`, `1.0.1`) with OCI and `com.filecleaner.release-notes` labels and preflight check.
+  - Bumped crate version to `1.0.1` in [`Cargo.toml`](../Cargo.toml) and [`Cargo.lock`](../Cargo.lock), cut `## [1.0.1] - 2026-11-20` in [`CHANGELOG.md`](../CHANGELOG.md), authored [`docs/RELEASE_NOTES_v1.0.1.md`](RELEASE_NOTES_v1.0.1.md), updated EN/FR documentation (`README.md`, `README.fr.md`, `docs/en/{USER_GUIDE,COOKBOOK_EXAMPLES,SPECIFICATIONS}.md`, `docs/fr/{GUIDE_UTILISATEUR,EXEMPLES_RECETTES,SPECIFICATIONS}.md`), and added workflow + Dockerfile security assertions in [`tests/governance_and_docs_test.rs`](../tests/governance_and_docs_test.rs).
+- **Result**:
+  - Verified in WSL2 (`CARGO_TARGET_DIR=/var/tmp/filecleaner-target-rel`): `cargo fmt --all -- --check` PASS, 3-target `cargo clippy --all-targets -- -D warnings` PASS (`0` warnings), `cargo test --all-targets` PASS (`125/125`: `64` unit + `61` integration across `9` suites), and `cargo llvm-cov --fail-under-lines 90` PASS (`94.31%` lines / `92.45%` regions across `9,098` lines).
+  - Verified local container build (`docker build -t jmrenouard/filecleaner:1.0.1 .`) and live container execution (`filecleaner 1.0.1`, `uid=10001(fcuser)`, `/data` sweep `2 evaluated, 1 acted`, and bundled example validation).
+
 ### ACT-008 — Post-v1.0.1 Ponytail Audit Fixes, Expanded Test Suite, and Bilingual 5-Minute HOWTO (`Issue #20`)
 
 - **Date / Time (ISO)**: `2026-11-20T18:45:00Z`

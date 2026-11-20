@@ -9,6 +9,7 @@
 <div align="center">
 
 [![Release](https://img.shields.io/github/v/release/jmrenouard/FileCleaner?style=flat-square&logo=github&color=0ea5e9)](https://github.com/jmrenouard/FileCleaner/releases)
+[![Docker Hub](https://img.shields.io/docker/v/jmrenouard/filecleaner?sort=semver&style=flat-square&logo=docker&color=2563eb&label=Docker%20Hub)](https://hub.docker.com/r/jmrenouard/filecleaner)
 [![CI](https://github.com/jmrenouard/FileCleaner/actions/workflows/ci.yml/badge.svg)](https://github.com/jmrenouard/FileCleaner/actions/workflows/ci.yml)
 [![Pure Rust](https://img.shields.io/badge/Rust-2021_Pure--Rust-10b981?style=flat-square&logo=rust)](Cargo.toml)
 [![Tests](https://img.shields.io/badge/Tests-124_Passed-3b82f6?style=flat-square)](docs/ACTION_LOGBOOK.md)
@@ -56,7 +57,7 @@
 
 Traditional cleanup cron scripts and ad-hoc rotation utilities routinely cause silent production outages through four structural failure modes:
 
-| Production Failure Mode | Fragile `find` / Shell / `logrotate` Behavior | FileCleaner v1.0.0 Guarantee |
+| Production Failure Mode | Fragile `find` / Shell / `logrotate` Behavior | FileCleaner v1.0.1 Guarantee |
 | :--- | :--- | :--- |
 | **The Silent Stale-Backup Wipe** | When a `pg_dump` or `mysqldump` job fails silently for two weeks, `find -mtime +14 -delete` deletes the **last surviving valid backup**, leaving an empty vault or 0-byte error stubs. | **Backup Safety Guards**: Filters out corrupt stubs below `min_valid_backup_bytes`, locks the newest `min_keep_files` floor, and triggers a **staleness dead-man's-switch freeze** (`require_newer_within` / `freeze_if_newest_older_than`) when no fresh valid backup exists. |
 | **Mid-Write File Truncation & Corruption** | Cron sweeps unlink or move incoming transfers, rotating logs, or dumps still held open by `rsync`, `tar`, `mysqldump`, or an application process. | **6-Layer In-Use Detection Matrix**: Combines sidecar lock/temp suffixes, Unix `flock(LOCK_EX \| LOCK_NB)`, Linux `/proc/*/fd` inode matching, Windows `share_mode(0)`, `min_idle_age` cooldown, and a batched two-point `(size, mtime)` stability window. |
@@ -112,15 +113,19 @@ flowchart LR
 
 ## CLI Quickstart
 
-### Install from Prebuilt Release or Source
+### Install from Prebuilt Release, Cargo, or Docker Hub
 
 ```bash
-# Option 1: Build & install with Cargo (Rust >= 1.75 / Edition 2021)
-cargo install --git https://github.com/jmrenouard/FileCleaner --locked
+# Option 1: Run multi-arch container directly from Docker Hub (linux/amd64 & linux/arm64)
+docker run --rm jmrenouard/filecleaner:latest --version
+docker run --rm -v "$(pwd)/data:/data" jmrenouard/filecleaner:latest plan --dir /data --max-age 14d
 
-# Option 2: Download a prebuilt archive from GitHub Releases (example: Linux x86_64 musl)
-curl -LO https://github.com/jmrenouard/FileCleaner/releases/download/v1.0.0/filecleaner-v1.0.0-x86_64-unknown-linux-musl.tar.gz
-tar -xzf filecleaner-v1.0.0-x86_64-unknown-linux-musl.tar.gz
+# Option 2: Build & install with Cargo (Rust >= 1.75 / Edition 2021)
+cargo install --git https://github.com/jmrenouard/FileCleaner --tag v1.0.1 --locked
+
+# Option 3: Download a prebuilt archive from GitHub Releases (example: Linux x86_64 musl)
+curl -LO https://github.com/jmrenouard/FileCleaner/releases/download/v1.0.1/filecleaner-v1.0.1-x86_64-unknown-linux-musl.tar.gz
+tar -xzf filecleaner-v1.0.1-x86_64-unknown-linux-musl.tar.gz
 sudo install -m 0755 filecleaner /usr/local/bin/filecleaner
 ```
 
