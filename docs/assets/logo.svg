@@ -1,0 +1,134 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" fill="none" role="img" aria-label="FileCleaner Logo">
+  <defs>
+    <!-- Dark Obsidian Squircle Surface -->
+    <linearGradient id="fcBgSurf" x1="4" y1="4" x2="116" y2="116" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#13161b"/>
+      <stop offset="100%" stop-color="#08090a"/>
+    </linearGradient>
+
+    <!-- Subtle Ambient Vault Glow -->
+    <radialGradient id="fcCoreGlow" cx="60" cy="56" r="46" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0ea5e9" stop-opacity="0.14"/>
+      <stop offset="55%" stop-color="#10b981" stop-opacity="0.07"/>
+      <stop offset="100%" stop-color="#08090a" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Specular Top Border Accent -->
+    <linearGradient id="fcSpecBorder" x1="12" y1="4" x2="108" y2="116" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.28"/>
+      <stop offset="45%" stop-color="#ffffff" stop-opacity="0.10"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0.16"/>
+    </linearGradient>
+
+    <!-- Retention Sweep Rotor Gradient (Emerald -> Sky) -->
+    <linearGradient id="fcSweepGrad" x1="27" y1="80" x2="96" y2="78" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#10b981" stop-opacity="0.78"/>
+      <stop offset="28%" stop-color="#34d399"/>
+      <stop offset="62%" stop-color="#06b6d4"/>
+      <stop offset="100%" stop-color="#0ea5e9"/>
+    </linearGradient>
+
+    <!-- Golden / Amber Shield-Vault Core Gradient -->
+    <linearGradient id="fcShieldGold" x1="42" y1="38" x2="78" y2="83" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#fde047"/>
+      <stop offset="45%" stop-color="#f59e0b"/>
+      <stop offset="100%" stop-color="#d97706"/>
+    </linearGradient>
+
+    <!-- Inner Vault Dark Chamber -->
+    <linearGradient id="fcVaultInset" x1="60" y1="43" x2="60" y2="77" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#15110a"/>
+      <stop offset="100%" stop-color="#08090c"/>
+    </linearGradient>
+
+    <!-- Lock Body Bright Amber -->
+    <linearGradient id="fcLockGold" x1="52" y1="55" x2="68" y2="70" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#fef08a"/>
+      <stop offset="50%" stop-color="#fbbf24"/>
+      <stop offset="100%" stop-color="#f59e0b"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Outer Obsidian Squircle with Specular Hairline -->
+  <rect x="4" y="4" width="112" height="112" rx="26" fill="url(#fcBgSurf)"/>
+  <rect x="4" y="4" width="112" height="112" rx="26" fill="url(#fcCoreGlow)"/>
+  <rect x="4" y="4" width="112" height="112" rx="26" stroke="url(#fcSpecBorder)" stroke-width="1.5"/>
+  <rect x="7" y="7" width="106" height="106" rx="23" stroke="#ffffff" stroke-opacity="0.06" stroke-width="1"/>
+
+  <!-- Precision Threshold Dial Ticks (Age / Size / Count Calibration Ring) -->
+  <!-- 3 Primary Equilateral Threshold Markers (-90 deg, 30 deg, 150 deg) -->
+  <line x1="60" y1="12.4" x2="60" y2="18.2" stroke="#10b981" stroke-width="2.4" stroke-linecap="round"/>
+  <line x1="97.8" y1="81.8" x2="102.2" y2="84.4" stroke="#0ea5e9" stroke-width="2.4" stroke-linecap="round"/>
+  <line x1="22.2" y1="81.8" x2="17.8" y2="84.4" stroke="#34d399" stroke-width="2.4" stroke-linecap="round"/>
+
+  <!-- Secondary Dial Ticks (30 deg intervals) -->
+  <g stroke="#64748b" stroke-opacity="0.68" stroke-width="1.5" stroke-linecap="round">
+    <line x1="81.6" y1="22.6" x2="83.3" y2="19.7"/>
+    <line x1="97.4" y1="38.4" x2="100.3" y2="36.7"/>
+    <line x1="101.8" y1="60" x2="105.8" y2="60"/>
+    <line x1="81.6" y1="97.4" x2="83.3" y2="100.3"/>
+    <line x1="60" y1="101.8" x2="60" y2="105.8"/>
+    <line x1="38.4" y1="97.4" x2="36.7" y2="100.3"/>
+    <line x1="18.2" y1="60" x2="14.2" y2="60"/>
+    <line x1="22.6" y1="38.4" x2="19.7" y2="36.7"/>
+    <line x1="38.4" y1="22.6" x2="36.7" y2="19.7"/>
+  </g>
+
+  <!-- Subtle Orbital Track & Cleared Eviction Sector (Bottom 120 deg) -->
+  <circle cx="60" cy="60" r="35.6" stroke="#1e293b" stroke-width="2.2" stroke-opacity="0.72"/>
+  <path d="M 84.28 86.03 A 35.6 35.6 0 0 1 33.54 83.82" stroke="#38bdf8" stroke-opacity="0.28" stroke-width="1.6" stroke-dasharray="2.5 3.8" stroke-linecap="round"/>
+
+  <!-- Receding Cleared-Zone Telemetry Pips -->
+  <circle cx="80.93" cy="88.80" r="1.7" fill="#38bdf8" fill-opacity="0.78"/>
+  <circle cx="74.48" cy="92.52" r="1.4" fill="#0ea5e9" fill-opacity="0.52"/>
+  <circle cx="67.40" cy="94.82" r="1.1" fill="#64748b" fill-opacity="0.40"/>
+
+  <!-- Precision Retention Sweep Crescent & Rotor Blade (148 deg clockwise to 40 deg) -->
+  <path d="M 27.60 80.24
+           A 38.2 38.2 0 1 1 93.73 77.93
+           L 96.17 78.43
+           L 87.73 83.27
+           Q 88.90 79.60 89.56 75.97
+           A 34.8 34.8 0 1 0 28.63 79.60
+           Z"
+        fill="url(#fcSweepGrad)"/>
+
+  <!-- Protected Air-Gap Moat Separating Sweep from Untouchable Core -->
+  <circle cx="60" cy="60" r="27.2" fill="#090b0f" stroke="#f59e0b" stroke-opacity="0.38" stroke-width="1.25"/>
+
+  <!-- Central Protected Golden / Amber Shield-Vault Core -->
+  <path d="M 60 38.0
+           L 77.5 43.6
+           L 77.5 58.6
+           C 77.5 70.0 69.5 77.8 60 82.4
+           C 50.5 77.8 42.5 70.0 42.5 58.6
+           L 42.5 43.6
+           Z"
+        fill="url(#fcShieldGold)"
+        stroke="#fef3c7"
+        stroke-opacity="0.55"
+        stroke-width="1"/>
+
+  <!-- Dark Obsidian Inner Vault Recess -->
+  <path d="M 60 42.2
+           L 73.3 46.7
+           L 73.3 58.4
+           C 73.3 67.3 67.3 73.5 60 77.4
+           C 52.7 73.5 46.7 67.3 46.7 58.4
+           L 46.7 46.7
+           Z"
+        fill="url(#fcVaultInset)"
+        stroke="#b45309"
+        stroke-opacity="0.65"
+        stroke-width="0.9"/>
+
+  <!-- Staleness Freeze Lock & Minimum Keep Core -->
+  <path d="M 55.0 57.2 V 53.4 A 5.0 5.0 0 0 1 65.0 53.4 V 57.2"
+        stroke="#fbbf24"
+        stroke-width="2.7"
+        stroke-linecap="round"/>
+  <rect x="51.4" y="56.8" width="17.2" height="12.6" rx="2.8" fill="url(#fcLockGold)"/>
+  <!-- Keyhole -->
+  <circle cx="60" cy="62.0" r="2.1" fill="#0c0a06"/>
+  <rect x="59.0" y="62.2" width="2.0" height="4.2" rx="0.9" fill="#0c0a06"/>
+</svg>
