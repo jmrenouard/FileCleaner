@@ -35,6 +35,7 @@
   - `cargo test`: PASS (`44` unit tests + `28` integration tests across 6 suites = `72 passed; 0 failed`).
   - `cargo llvm-cov --all-targets --workspace --summary-only --fail-under-lines 90`: PASS (`91.74%` line coverage across `4,711` lines: `actions.rs` `88.69%`, `audit.rs` `95.16%`, `config.rs` `94.61%`, `error.rs` `100.00%`, `hooks.rs` `93.93%`, `in_use.rs` `87.23%`, `main.rs` `100.00%`, `policy.rs` `92.38%`, `scanner.rs` `90.79%`).
   - Independent Audit: Approved by `@verifier` (`38/38` standalone, `92.82%` standalone) and verified post-merge (`72/72`, `91.74%`).
+  - GitHub Tracking: Issue `#8` / PR `#11` (`feat/issue-8-actions-compression-hooks`).
 
 ### ACT-002 — Implement Directory Scanner, Multi-Probe In-Use Detector, and Backup-Guarded Retention Engine (`Issue #7`)
 - **Timestamp**: `2026-11-20T09:57:09Z`
