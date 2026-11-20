@@ -1,0 +1,70 @@
+# FileCleaner Production Example: High-Throughput ETL Incoming Spool
+# Features: Multi-probe in-use protection, pre-delete checksum verification hook
+#           with exit 42 veto and AbortRule policy, plus Zip archival move.
+
+dry_run: false
+global_trash_dir: /var/tmp/filecleaner-trash
+
+daemon:
+  mode: hybrid
+  interval: 2m
+  watch: true
+  debounce: 1s
+  sweep_on_start: true
+
+audit:
+  log_path: /var/log/filecleaner/incoming-spool-audit.jsonl
+  jsonl: true
+
+rules:
+  - name: etl-incoming-spool
+    path: /var/spool/etl/incoming
+    enabled: true
+    recursive: true
+    max_depth: 3
+    follow_symlinks: false
+    include_globs:
+      - "*.csv"
+      - "*.parquet"
+    exclude_globs:
+      - "quarantine/**"
+      - "*.keep"
+    min_file_size: 1B
+    time_basis: modified
+    max_age: 12h
+    max_total_size: 20GiB
+    combine_mode: any
+    eviction_order: largest_first
+    in_use:
+      enabled: true
+      check_sidecar_locks: true
+      sidecar_suffixes:
+        - ".lock"
+        - ".lck"
+        - ".part"
+        - ".tmp"
+        - ".processing"
+      check_os_locks: true
+      check_proc_fd: true
+      min_idle_age: 30s
+      stability_window: 3s
+    pre_delete_hook:
+      command: examples/hooks/verify_checksum_before_delete.sh
+      args:
+        - "--strict"
+        - "{path}"
+        - "{size}"
+      timeout: 15s
+      on_failure: abort_rule
+      skip_exit_code: 42
+      run_in_dry_run: false
+    actions:
+      - compress
+      - move
+    compression: zip
+    compression_level: 6
+    compress_remove_source: true
+    compress_overwrite: false
+    move_to: /var/spool/etl/archived
+    move_date_subdir: "%Y/%m/%d"
+    move_overwrite: false
