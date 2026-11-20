@@ -1034,3 +1034,253 @@ fn cli_check_in_use_batches_multiple_paths_with_single_stability_sleep() {
     assert_eq!(parsed["busy_count"], 0);
     assert_eq!(parsed["reports"].as_array().unwrap().len(), 4);
 }
+
+#[test]
+fn cli_daemon_status_reports_stale_for_foreign_pid_and_adhoc_rename_template_works() {
+    let tmp = TempDir::new().unwrap();
+    let pid_file = tmp.path().join("recycled_foreign.pid");
+    let logs = tmp.path().join("logs");
+    let archive = tmp.path().join("archive");
+    fs::create_dir_all(&logs).unwrap();
+
+    // 1. Recycled foreign PID reports stale (`exit 4`, `stale_pid: true`) rather than live.
+    #[cfg(unix)]
+    let mut foreign = StdCommand::new("sleep").arg("5").spawn().unwrap();
+    #[cfg(windows)]
+    let mut foreign = StdCommand::new("ping")
+        .args(["-n", "6", "127.0.0.1"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    fs::write(&pid_file, format!("{}\n", foreign.id())).unwrap();
+
+    let status_out = cli_bin()
+        .args([
+            "--json",
+            "daemon",
+            "status",
+            "--pid-file",
+            pid_file.to_str().unwrap(),
+        ])
+        .assert()
+        .code(4)
+        .get_output()
+        .stdout
+        .clone();
+    let _ = foreign.kill();
+    let _ = foreign.wait();
+
+    let status_json: serde_json::Value = serde_json::from_slice(&status_out).unwrap();
+    assert_eq!(status_json["running"], false);
+    assert_eq!(status_json["stale_pid"], true);
+
+    // 2. Passing `--rename-template` in ad-hoc mode implies `--rename-by-date`.
+    let old_log = logs.join("api.log");
+    fs::write(&old_log, b"payload").unwrap();
+    set_mtime_unix(&old_log, 1_700_000_000);
+
+    cli_bin()
+        .args([
+            "run",
+            "--dir",
+            logs.to_str().unwrap(),
+            "--max-age",
+            "1s",
+            "--rename-template",
+            "%Y%m%d",
+            "--move-to",
+            archive.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    assert!(!old_log.exists());
+    assert!(archive.join("api_20231114.log").exists());
+}
+
+#[test]
+fn cli_human_verbose_quiet_freeze_constrained_and_daemon_template_error_paths() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("vault");
+    fs::create_dir_all(&dir).unwrap();
+    for (name, content, age) in [
+        ("ok_1.sql", b"valid-data-1".as_slice(), 72 * 3600),
+        ("ok_2.sql", b"valid-data-2".as_slice(), 72 * 3600 + 60),
+    ] {
+        let p = dir.join(name);
+        fs::write(&p, content).unwrap();
+        set_mtime_unix(&p, Utc::now().timestamp() - age);
+    }
+
+    // 1. Verbose human output for freeze (`--fail-on-freeze` -> exit 3) and constrained (`--strict-constraints` -> exit 3).
+    cli_bin()
+        .args([
+            "-v",
+            "plan",
+            "--dir",
+            dir.to_str().unwrap(),
+            "--max-files",
+            "0",
+            "--require-newer-within",
+            "1h",
+            "--fail-on-freeze",
+        ])
+        .assert()
+        .code(3)
+        .stdout(predicate::str::contains("Freeze"));
+
+    cli_bin()
+        .args([
+            "-v",
+            "run",
+            "--dir",
+            dir.to_str().unwrap(),
+            "--min-keep",
+            "2",
+            "--max-size",
+            "1B",
+            "--strict-constraints",
+        ])
+        .assert()
+        .code(3)
+        .stdout(predicate::str::contains("constrained"));
+
+    // 2. Quiet `run` produces empty stdout (`-q`).
+    cli_bin()
+        .args(["-q", "plan", "--dir", dir.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout("");
+
+    // 3. `validate` human & JSON invalid output + `daemon status` stopped human output.
+    let bad_cfg = tmp.path().join("bad.toml");
+    fs::write(&bad_cfg, "rules = []\n").unwrap();
+    cli_bin()
+        .args(["--json", "validate", bad_cfg.to_str().unwrap()])
+        .assert()
+        .code(2)
+        .stdout(predicate::str::contains("\"valid\": false"));
+
+    cli_bin()
+        .args([
+            "daemon",
+            "status",
+            "--pid-file",
+            tmp.path().join("nope.pid").to_str().unwrap(),
+        ])
+        .assert()
+        .code(4)
+        .stdout(predicate::str::contains("stopped"));
+
+    // 4. `daemon service-template` error when `--output` is an existing directory.
+    cli_bin()
+        .args([
+            "daemon",
+            "service-template",
+            "--init-system",
+            "systemd",
+            "--output",
+            tmp.path().to_str().unwrap(),
+        ])
+        .assert()
+        .code(1);
+
+    // 5. Additional CLI text/JSON formatting & error paths: init stdout, validate missing/corrupt,
+    // unknown --rule, constrained/freeze JSON, daemon status with state file, windows-task file write.
+    cli_bin()
+        .current_dir(tmp.path())
+        .args(["init", "--profile", "backups", "--format", "toml"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "initialized backups starter configuration",
+        ));
+
+    cli_bin()
+        .current_dir(tmp.path())
+        .args(["--json", "init", "--profile", "logs", "--format", "yaml"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"format\": \"yaml\""));
+
+    let missing_cfg = tmp.path().join("does_not_exist.toml");
+    cli_bin()
+        .args(["validate", missing_cfg.to_str().unwrap()])
+        .assert()
+        .code(1);
+
+    let broken_yaml = tmp.path().join("broken.yaml");
+    fs::write(&broken_yaml, "rules:\n  - name: [unclosed\n").unwrap();
+    cli_bin()
+        .args(["validate", broken_yaml.to_str().unwrap()])
+        .assert()
+        .code(2);
+
+    let good_cfg = tmp.path().join("good.toml");
+    fs::write(
+        &good_cfg,
+        format!(
+            "dry_run = true\n[[rules]]\nname = \"only-rule\"\npath = \"{}\"\nactions = [\"delete\"]\n",
+            write_toml_escape(&dir)
+        ),
+    )
+    .unwrap();
+    cli_bin()
+        .args([
+            "run",
+            "--config",
+            good_cfg.to_str().unwrap(),
+            "--rule",
+            "missing-rule",
+        ])
+        .assert()
+        .code(2);
+
+    let state_json = tmp.path().join("daemon.state.json");
+    fs::write(
+        &state_json,
+        r#"{"version":"1.0.0","pid":999999,"status":"stopped","watch_mode":"hybrid","started_at":"2026-11-20T09:00:00Z","last_sweep_at":"2026-11-20T09:05:00Z","next_sweep_at":null,"sweeps_completed":4,"total_files_evaluated":10,"total_files_processed":2,"total_bytes_reclaimed":1024,"active_freezes":["bkp"],"constrained_rules":["logs"],"last_error":"sample error"}"#,
+    )
+    .unwrap();
+    cli_bin()
+        .args([
+            "--json",
+            "daemon",
+            "status",
+            "--pid-file",
+            tmp.path().join("missing_live.pid").to_str().unwrap(),
+            "--state-file",
+            state_json.to_str().unwrap(),
+        ])
+        .assert()
+        .code(4)
+        .stdout(predicate::str::contains("\"sweeps_completed\": 4"));
+
+    let win_task = tmp.path().join("task.xml");
+    cli_bin()
+        .args([
+            "daemon",
+            "service-template",
+            "--init-system",
+            "windows-task",
+            "--config",
+            good_cfg.to_str().unwrap(),
+            "--user",
+            "NT AUTHORITY\\SYSTEM",
+            "--output",
+            win_task.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    assert!(fs::read_to_string(&win_task).unwrap().contains("<Task"));
+
+    cli_bin()
+        .args([
+            "-v",
+            "check-in-use",
+            tmp.path().join("missing_probe.sql").to_str().unwrap(),
+        ])
+        .assert()
+        .code(10)
+        .stdout(predicate::str::contains("BUSY:"));
+}

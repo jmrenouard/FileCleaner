@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Post-v1.0.1 Audit, Coverage & Documentation (Issue #20)
+
+- **Hook Stderr Drain Protection (`src/hooks.rs`)**: Replaced unbounded/channel stderr forwarding with a bounded `Arc<Mutex<Vec<u8>>>` buffer (`MAX_HOOK_STDERR_BYTES = 64 KiB`, UTF-8 char-boundary safe truncation) and bounded EOF drain grace (`STDERR_DRAIN_GRACE`) so failing hooks that spawn lingering background grandchildren still preserve their diagnostic `stderr` without blocking.
+- **Template Validation & Ad-Hoc Rename Flag (`src/config.rs`, `src/cli.rs`)**: Validated non-empty `rule.rename_template` `strftime` formats eagerly inside `Config::validate()`, and automatically activated `ActionStep::RenameByDate` when `--rename-template` is passed without `--rename-by-date` in ad-hoc CLI sweeps.
+- **Process Identity Guard (`src/daemon.rs`)**: Verified `is_live_filecleaner_pid(pid)` (`is_pid_alive(pid) && is_filecleaner_process(pid)`) in both `daemon_status` and `claim_pid_file`, treating recycled non-FileCleaner PIDs as stale rather than active daemons.
+- **Bilingual 5-Minute HOWTO & Schema Alignment (`docs/en/HOWTO.md`, `docs/fr/HOWTO.md`, `docs/`)**: Added beginner-friendly EN/FR quick-start HOWTO guides with automated heading parity and config validation tests, added cross-links across READMEs/User Guides/Cookbooks, and corrected the `check-in-use --json` wrapper schema example (`all_safe`, `busy_count`, `reports`).
+- **Expanded Verification & Coverage (`tests/product_workflows_e2e_test.rs`)**: Added end-to-end HOWTO workflow tests and targeted unit/integration coverage lifting the workspace to `124` passing tests (`64` unit + `60` integration across `9` suites) and `94.31%` line coverage (`>= 90.21%` per `src/*.rs` module).
+
 ### Security
 
 - **Symlink-Swap TOCTOU Hardening & Private Staging (`src/actions.rs`, `src/engine.rs`)**: Added non-following regular-file opens (`O_NOFOLLOW` plus `(st_dev, st_ino)` verification on Unix; `FILE_FLAG_OPEN_REPARSE_POINT` plus reparse-point attribute validation on Windows), `0o600` private `.fc-tmp` staging creation, `copy_truncate` pre/post inode continuity checks, and pre-execute symlink verification before running live action pipelines.

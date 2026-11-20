@@ -883,3 +883,409 @@ fn fc_tmp_staging_and_audit_log_enforce_0600_and_rotation() {
     assert_eq!(fs::metadata(&rotated_path).unwrap().len(), 300);
     drop(reopened);
 }
+
+#[test]
+fn compressed_copy_truncate_cross_fs_boundaries_and_trash_extensionless_edge_cases() {
+    let tmp = TempDir::new().unwrap();
+    let rotated = tmp.path().join("ct_rotated");
+    let fixed_secs = Utc
+        .with_ymd_and_hms(2026, 11, 20, 9, 5, 0)
+        .unwrap()
+        .timestamp();
+
+    // 1. CopyTruncate with Brotli & Zip codecs + _1/_2 collision counter on raw archives.
+    let ct_src = tmp.path().join("edge.log");
+    let make_ct_target = |len: u64| WorkingTarget {
+        path: ct_src.clone(),
+        size_bytes: len,
+        mtime: Utc.timestamp_opt(fixed_secs, 0).unwrap(),
+        atime: None,
+    };
+
+    for (fmt, ext) in [
+        (CompressionFormat::Brotli, ".br"),
+        (CompressionFormat::Zip, ".zip"),
+    ] {
+        fs::write(&ct_src, b"brotli-and-zip-copy-truncate-payload").unwrap();
+        let mut rule = make_rule(
+            "ct-compressed",
+            tmp.path().to_path_buf(),
+            vec![ActionStep::CopyTruncate],
+        );
+        rule.copy_truncate_to = Some(rotated.clone());
+        rule.compression = fmt;
+        rule.compression_level = Some(5);
+        let rep = ActionExecutor::execute_pipeline(make_ct_target(36), &rule, None, false).unwrap();
+        let dest = rep.final_path.unwrap();
+        assert!(dest.to_string_lossy().ends_with(ext));
+        assert!(dest.exists());
+        assert_eq!(fs::metadata(&ct_src).unwrap().len(), 0);
+    }
+
+    // Raw same-second collision counter increments _1 then _2.
+    let mut raw_rule = make_rule(
+        "ct-seq",
+        tmp.path().to_path_buf(),
+        vec![ActionStep::CopyTruncate],
+    );
+    raw_rule.copy_truncate_to = Some(rotated.clone());
+    for expected in [
+        rotated.join("edge_20261120_090500.log"),
+        rotated.join("edge_20261120_090500_1.log"),
+        rotated.join("edge_20261120_090500_2.log"),
+    ] {
+        fs::write(&ct_src, b"chunk").unwrap();
+        let rep =
+            ActionExecutor::execute_pipeline(make_ct_target(5), &raw_rule, None, false).unwrap();
+        assert_eq!(rep.final_path, Some(expected));
+    }
+
+    // 2. Dry-run Compress preserves source without touching disk (both remove_source=true/false).
+    let dry_file = tmp.path().join("dry_comp.log");
+    let dry_target = create_stamped_file(&dry_file, b"dry-compress-bytes", fixed_secs);
+    for remove_src in [true, false] {
+        let mut comp_dry = make_rule(
+            "dry-comp",
+            tmp.path().to_path_buf(),
+            vec![ActionStep::Compress],
+        );
+        comp_dry.compress_remove_source = remove_src;
+        let rep =
+            ActionExecutor::execute_pipeline(dry_target.clone(), &comp_dry, None, true).unwrap();
+        assert!(rep.dry_run);
+        assert_eq!(rep.bytes_freed, 0);
+        assert_eq!(rep.final_path, Some(tmp.path().join("dry_comp.log.gz")));
+        assert!(!tmp.path().join("dry_comp.log.gz").exists());
+    }
+
+    // 3. Forced cross-FS overwrite=false fails, overwrite=true replaces dest with SHA-256.
+    let cross_src = tmp.path().join("cross_src.sql");
+    let cross_dest = tmp.path().join("dest_dir/cross_src.sql");
+    fs::create_dir_all(cross_dest.parent().unwrap()).unwrap();
+    fs::write(&cross_dest, b"existing-target").unwrap();
+    let t_cross = create_stamped_file(&cross_src, b"replacement-payload", fixed_secs);
+    assert!(matches!(
+        ActionExecutor::move_with_cross_fs_fallback(
+            &cross_src,
+            &cross_dest,
+            t_cross.mtime,
+            None,
+            false,
+            true
+        ),
+        Err(FileCleanerError::Io { .. })
+    ));
+    let sha = ActionExecutor::move_with_cross_fs_fallback(
+        &cross_src,
+        &cross_dest,
+        t_cross.mtime,
+        t_cross.atime,
+        true,
+        true,
+    )
+    .unwrap();
+    assert!(sha.is_some());
+    assert!(!cross_src.exists());
+    assert_eq!(fs::read(&cross_dest).unwrap(), b"replacement-payload");
+
+    // 4. Trash disambiguates extensionless files cleanly (`README`, `README_1`, `README_2`).
+    let trash_dir = tmp.path().join("trash");
+    let trash_rule = make_rule(
+        "trash-extless",
+        tmp.path().to_path_buf(),
+        vec![ActionStep::Trash],
+    );
+    for expected_name in ["README", "README_1", "README_2"] {
+        let p = tmp.path().join("README");
+        let t = create_stamped_file(&p, expected_name.as_bytes(), fixed_secs);
+        let rep =
+            ActionExecutor::execute_pipeline(t, &trash_rule, Some(&trash_dir), false).unwrap();
+        assert_eq!(rep.final_path, Some(trash_dir.join(expected_name)));
+    }
+
+    // 5. Public API error boundaries on missing paths / directories + pre-1970 mtime Zip handling.
+    let missing_file = tmp.path().join("does_not_exist.log");
+    assert!(matches!(
+        ActionExecutor::copy_and_verify_sha256(&missing_file, &tmp.path().join("out.tmp")),
+        Err(FileCleanerError::Io { .. })
+    ));
+    assert!(matches!(
+        ActionExecutor::move_with_cross_fs_fallback(
+            tmp.path(),
+            &tmp.path().join("bad_out"),
+            t_cross.mtime,
+            None,
+            false,
+            true
+        ),
+        Err(FileCleanerError::Io { .. })
+    ));
+
+    let old_src = tmp.path().join("ancient.txt");
+    fs::write(&old_src, b"ancient payload").unwrap();
+    let mut old_zip_rule = make_rule(
+        "ancient-zip",
+        tmp.path().to_path_buf(),
+        vec![ActionStep::Compress],
+    );
+    old_zip_rule.compression = CompressionFormat::Zip;
+    let old_target = WorkingTarget {
+        path: old_src.clone(),
+        size_bytes: 15,
+        mtime: Utc.with_ymd_and_hms(1969, 12, 31, 23, 59, 58).unwrap(),
+        atime: Some(
+            Utc.with_ymd_and_hms(1969, 12, 31, 23, 59, 58).unwrap()
+                + chrono::Duration::milliseconds(500),
+        ),
+    };
+    let zip_rep = ActionExecutor::execute_pipeline(old_target, &old_zip_rule, None, false).unwrap();
+    assert!(zip_rep.final_path.unwrap().exists());
+}
+
+#[test]
+fn action_dry_run_overwrite_rename_collision_and_io_error_boundaries() {
+    let tmp = TempDir::new().unwrap();
+    let fixed_secs = Utc
+        .with_ymd_and_hms(2026, 11, 20, 12, 0, 0)
+        .unwrap()
+        .timestamp();
+
+    // 1. Dry-run paths for Move (with date subdir), CopyTruncate, Trash, and Delete never touch disk.
+    let dry_src = tmp.path().join("dry_item.log");
+    let dry_target = create_stamped_file(&dry_src, b"dry-run-bytes", fixed_secs);
+    let dest_dir = tmp.path().join("dry_dest");
+    let trash_dir = tmp.path().join("dry_trash");
+
+    let mut dry_move = make_rule("dry-move", tmp.path().to_path_buf(), vec![ActionStep::Move]);
+    dry_move.move_to = Some(dest_dir.clone());
+    dry_move.move_date_subdir = Some("%Y/%m".to_string());
+    let mv_rep =
+        ActionExecutor::execute_pipeline(dry_target.clone(), &dry_move, None, true).unwrap();
+    assert_eq!(
+        mv_rep.final_path,
+        Some(dest_dir.join("2026/11/dry_item.log"))
+    );
+    assert!(!dest_dir.exists());
+
+    let mut dry_ct = make_rule(
+        "dry-ct",
+        tmp.path().to_path_buf(),
+        vec![ActionStep::CopyTruncate],
+    );
+    dry_ct.copy_truncate_to = Some(dest_dir.clone());
+    let ct_rep = ActionExecutor::execute_pipeline(dry_target.clone(), &dry_ct, None, true).unwrap();
+    assert!(ct_rep.dry_run);
+    assert_eq!(fs::metadata(&dry_src).unwrap().len(), 13);
+
+    let dry_tr = make_rule(
+        "dry-trash",
+        tmp.path().to_path_buf(),
+        vec![ActionStep::Trash],
+    );
+    assert!(
+        ActionExecutor::execute_pipeline(dry_target.clone(), &dry_tr, Some(&trash_dir), true)
+            .is_ok()
+    );
+    assert!(!trash_dir.exists());
+
+    let dry_del = make_rule(
+        "dry-del",
+        tmp.path().to_path_buf(),
+        vec![ActionStep::Delete],
+    );
+    assert!(ActionExecutor::execute_pipeline(dry_target, &dry_del, None, true).is_ok());
+    assert!(dry_src.exists());
+
+    // 2. RenameByDate rejects existing destination cleanly and refuses symlink when disallowed.
+    let ren_src = tmp.path().join("dup.log");
+    let ren_existing = tmp.path().join("dup_20261120_120000.log");
+    let ren_target = create_stamped_file(&ren_src, b"src", fixed_secs);
+    fs::write(&ren_existing, b"already-here").unwrap();
+    let ren_rule = make_rule(
+        "ren-dup",
+        tmp.path().to_path_buf(),
+        vec![ActionStep::RenameByDate],
+    );
+    assert!(matches!(
+        ActionExecutor::execute_pipeline(ren_target, &ren_rule, None, false),
+        Err(FileCleanerError::Io { .. })
+    ));
+
+    // 3. Compress overwrite=false fails when dest exists; overwrite=true + remove_source=false keeps source.
+    let comp_src = tmp.path().join("report.csv");
+    let comp_dest = tmp.path().join("report.csv.gz");
+    let comp_target = create_stamped_file(&comp_src, b"csv-row-1\ncsv-row-2\n", fixed_secs);
+    fs::write(&comp_dest, b"stale-gz").unwrap();
+
+    let mut comp_no_ow = make_rule(
+        "comp-no-ow",
+        tmp.path().to_path_buf(),
+        vec![ActionStep::Compress],
+    );
+    comp_no_ow.compress_overwrite = false;
+    assert!(matches!(
+        ActionExecutor::execute_pipeline(comp_target.clone(), &comp_no_ow, None, false),
+        Err(FileCleanerError::Io { .. })
+    ));
+
+    comp_no_ow.compress_overwrite = true;
+    comp_no_ow.compress_remove_source = false;
+    comp_no_ow.compression_level = Some(1);
+    let ow_rep = ActionExecutor::execute_pipeline(comp_target, &comp_no_ow, None, false).unwrap();
+    assert!(ow_rep.final_path == Some(comp_dest.clone()));
+    assert!(comp_src.exists());
+
+    // Compression levels across Brotli & Zip.
+    for (fmt, level) in [(CompressionFormat::Brotli, 1), (CompressionFormat::Zip, 9)] {
+        let s = tmp.path().join(format!("lvl_{fmt:?}.txt"));
+        let t = create_stamped_file(&s, b"level-check-data", fixed_secs);
+        let mut r = make_rule(
+            "comp-lvl",
+            tmp.path().to_path_buf(),
+            vec![ActionStep::Compress],
+        );
+        r.compression = fmt;
+        r.compression_level = Some(level);
+        assert!(ActionExecutor::execute_pipeline(t, &r, None, false).is_ok());
+    }
+
+    // 4. Move to same directory (`dest == target.path`) acts as safe no-op.
+    let same_dir_file = tmp.path().join("stay.log");
+    let same_target = create_stamped_file(&same_dir_file, b"stay", fixed_secs);
+    let mut same_mv = make_rule("same-mv", tmp.path().to_path_buf(), vec![ActionStep::Move]);
+    same_mv.move_to = Some(tmp.path().to_path_buf());
+    let same_rep = ActionExecutor::execute_pipeline(same_target, &same_mv, None, false).unwrap();
+    assert_eq!(same_rep.final_path, Some(same_dir_file.clone()));
+    assert!(same_dir_file.exists());
+
+    // 5. Error boundaries: missing source for Compress/CopyTruncate, invalid dest parent in SHA copy.
+    let missing = WorkingTarget {
+        path: tmp.path().join("gone.log"),
+        size_bytes: 10,
+        mtime: Utc.timestamp_opt(fixed_secs, 0).unwrap(),
+        atime: None,
+    };
+    let miss_comp = make_rule(
+        "miss-comp",
+        tmp.path().to_path_buf(),
+        vec![ActionStep::Compress],
+    );
+    assert!(ActionExecutor::execute_pipeline(missing.clone(), &miss_comp, None, false).is_err());
+
+    let mut miss_ct = make_rule(
+        "miss-ct",
+        tmp.path().to_path_buf(),
+        vec![ActionStep::CopyTruncate],
+    );
+    miss_ct.copy_truncate_to = Some(dest_dir.clone());
+    assert!(ActionExecutor::execute_pipeline(missing, &miss_ct, None, false).is_err());
+
+    let regular_blocker = tmp.path().join("blocker_file");
+    fs::write(&regular_blocker, b"not-a-dir").unwrap();
+    assert!(ActionExecutor::copy_and_verify_sha256(
+        &same_dir_file,
+        &regular_blocker.join("child.tmp")
+    )
+    .is_err());
+
+    // 6. Multi-chunk (> 64 KiB) payloads across all 4 compression codecs, CopyTruncate & cross-FS Move.
+    let big_payload: Vec<u8> = (0..131_072).map(|i| (i % 251) as u8).collect();
+    for (idx, fmt) in [
+        CompressionFormat::Gzip,
+        CompressionFormat::Lz4,
+        CompressionFormat::Brotli,
+        CompressionFormat::Zip,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let p = tmp.path().join(format!("big_{idx}.bin"));
+        let t = create_stamped_file(&p, &big_payload, fixed_secs);
+        let mut r = make_rule(
+            "big-comp",
+            tmp.path().to_path_buf(),
+            vec![ActionStep::Compress],
+        );
+        r.compression = fmt;
+        r.compression_level = Some(6);
+        let rep = ActionExecutor::execute_pipeline(t, &r, None, false).unwrap();
+        assert!(rep.final_path.unwrap().exists());
+    }
+
+    let big_move_src = tmp.path().join("big_move.bin");
+    let big_move_dst = dest_dir.join("big_move.bin");
+    fs::create_dir_all(&dest_dir).unwrap();
+    let big_mv_target = create_stamped_file(&big_move_src, &big_payload, fixed_secs);
+    let sha_big = ActionExecutor::move_with_cross_fs_fallback(
+        &big_move_src,
+        &big_move_dst,
+        big_mv_target.mtime,
+        big_mv_target.atime,
+        true,
+        true,
+    )
+    .unwrap();
+    assert!(sha_big.is_some());
+    assert_eq!(fs::read(&big_move_dst).unwrap(), big_payload);
+
+    // 7. Live Move collision (overwrite=false), same-name RenameByDate no-op, missing-file Delete error.
+    let col_src = tmp.path().join("collide.log");
+    let col_dst = dest_dir.join("collide.log");
+    fs::write(&col_dst, b"existing").unwrap();
+    let col_target = create_stamped_file(&col_src, b"new", fixed_secs);
+    let mut col_rule = make_rule("mv-col", tmp.path().to_path_buf(), vec![ActionStep::Move]);
+    col_rule.move_to = Some(dest_dir.clone());
+    col_rule.move_overwrite = false;
+    assert!(matches!(
+        ActionExecutor::execute_pipeline(col_target, &col_rule, None, false),
+        Err(FileCleanerError::Io { .. })
+    ));
+
+    let same_name = tmp.path().join("fixed_20261120_120000.log");
+    let same_name_target = create_stamped_file(&same_name, b"ok", fixed_secs);
+    let same_name_rule = make_rule(
+        "ren-noop",
+        tmp.path().to_path_buf(),
+        vec![ActionStep::RenameByDate],
+    );
+    let ren_noop_rep =
+        ActionExecutor::execute_pipeline(same_name_target, &same_name_rule, None, false).unwrap();
+    assert_eq!(ren_noop_rep.final_path, Some(same_name));
+
+    let missing_del = WorkingTarget {
+        path: tmp.path().join("never_existed.log"),
+        size_bytes: 5,
+        mtime: Utc.timestamp_opt(fixed_secs, 0).unwrap(),
+        atime: None,
+    };
+    let del_rule = make_rule(
+        "del-miss",
+        tmp.path().to_path_buf(),
+        vec![ActionStep::Delete],
+    );
+    assert!(matches!(
+        ActionExecutor::execute_pipeline(missing_del, &del_rule, None, false),
+        Err(FileCleanerError::Io { .. })
+    ));
+
+    #[cfg(unix)]
+    {
+        let link_target = tmp.path().join("real_ct.log");
+        let link_path = tmp.path().join("sym_ct.log");
+        fs::write(&link_target, b"real").unwrap();
+        std::os::unix::fs::symlink(&link_target, &link_path).unwrap();
+        let sym_wt = WorkingTarget {
+            path: link_path,
+            size_bytes: 4,
+            mtime: Utc.timestamp_opt(fixed_secs, 0).unwrap(),
+            atime: None,
+        };
+        let mut sym_ct = make_rule(
+            "sym-ct",
+            tmp.path().to_path_buf(),
+            vec![ActionStep::CopyTruncate],
+        );
+        sym_ct.copy_truncate_to = Some(dest_dir);
+        assert!(ActionExecutor::execute_pipeline(sym_wt, &sym_ct, None, false).is_err());
+    }
+}

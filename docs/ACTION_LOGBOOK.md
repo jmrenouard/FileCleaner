@@ -11,11 +11,28 @@
 
 | Action ID | Date / Time (ISO) | Issue / Branch | Status | Request, Ongoing Changes & Expected Results |
 | :--- | :--- | :--- | :--- | :--- |
-| *(None)* | — | — | — | All actions completed. |
+| _None_ | — | — | — | All tracked tasks are completed. |
 
 ---
 
 ## 2. Completed Actions (`COMPLETED`)
+
+### ACT-008 — Post-v1.0.1 Ponytail Audit Fixes, Expanded Test Suite, and Bilingual 5-Minute HOWTO (`Issue #20`)
+
+- **Date / Time (ISO)**: `2026-11-20T18:45:00Z`
+- **Issue / Branch**: `#20` (`feat/issue-20-audit-tests-simple-howto`)
+- **Request**: Remediate post-`v1.0.1` code audit edge cases, expand unit/integration/E2E test coverage across all modules (`>= 90%` per module), and add a simple bilingual 5-minute HOWTO guide with verified documentation config blocks.
+- **Changes**:
+  - Audited & fixed 5 bugs/gaps plus lean cleanup:
+    - `src/hooks.rs`: Bounded stderr capture (`MAX_HOOK_STDERR_BYTES = 64 KiB` at UTF-8 boundaries) with `Arc<Mutex<Vec<u8>>>` + `STDERR_DRAIN_GRACE` so failing hooks leaving background grandchildren still report stderr cleanly.
+    - `src/config.rs`: Validated `rename_template` `strftime` templates eagerly inside `Config::validate()`.
+    - `src/cli.rs`: Auto-enabled `ActionStep::RenameByDate` in `build_adhoc_config` whenever `--rename-template` is provided.
+    - `src/daemon.rs`: Enforced `is_live_filecleaner_pid(pid)` (`is_pid_alive` + `is_filecleaner_process`) in `daemon_status` and `claim_pid_file` to handle recycled OS PIDs safely.
+    - `src/scanner.rs`: Simplified `compile_rule_matchers` to reuse trimmed `filename_date_regex`.
+  - Expanded tests (`src/config.rs`, `src/scanner.rs`, `src/audit.rs`, `src/in_use.rs`, `src/daemon.rs`, `src/cli.rs`, `tests/hooks_pre_delete_test.rs`, `tests/actions_pipeline_test.rs`, `tests/cli_validate.rs`, `tests/daemon_and_cli_test.rs`, `tests/governance_and_docs_test.rs`) and created `tests/product_workflows_e2e_test.rs` (`howto_workflow_1`..`4`).
+  - Added `docs/en/HOWTO.md` and `docs/fr/HOWTO.md`, updated cross-links in `README.md`, `README.fr.md`, `docs/en/USER_GUIDE.md`, `docs/fr/GUIDE_UTILISATEUR.md`, `docs/en/COOKBOOK_EXAMPLES.md`, and `docs/fr/EXEMPLES_RECETTES.md` (fixing `check-in-use --json` schema example), and updated `CHANGELOG.md` and `docs/RCA_REGISTER.md` (`RCA-007`).
+- **Result**:
+  - Verified in WSL2 (`CARGO_TARGET_DIR=/var/tmp/filecleaner-target-plan`): `cargo fmt --all` PASS, `cargo clippy --all-targets -- -D warnings` PASS (`0` warnings across Linux, `x86_64-pc-windows-gnu`, `aarch64-apple-darwin`), `cargo test --all-targets` PASS (`124/124`: `64` unit + `60` integration across `9` suites), and `cargo llvm-cov --all-targets --workspace --summary-only --fail-under-lines 90` PASS (`94.31%` lines / `92.45%` regions across `9,098` lines; every `src/*.rs` module `>= 90.21%`: `actions.rs` `90.21%`, `audit.rs` `92.89%`, `cli.rs` `94.14%`, `config.rs` `95.81%`, `daemon.rs` `94.07%`, `engine.rs` `97.82%`, `error.rs` `100.00%`, `hooks.rs` `95.54%`, `in_use.rs` `93.58%`, `main.rs` `100.00%`, `policy.rs` `94.82%`, `scanner.rs` `93.63%`). PR `#21` submitted and re-verified on `windows-latest` CI after Windows NTFS/share-mode/TOML array fixes (`RCA-008`).
 
 ### ACT-007 — Remediate All 14 Ponytail Security, Correctness, Scale, and CI Audit Findings (`Issue #18`)
 - **Timestamp**: `2026-11-20T14:01:41Z`

@@ -664,5 +664,63 @@ mod tests {
         let empty_actions_entry =
             AuditEntry::new(AuditEventKind::SweepEnd, "run-dry", true).with_actions(vec![]);
         assert!(empty_actions_entry.action.is_none());
+
+        // Exercise AuditLogger Debug formatting, noop jsonl=false config, and enabled accessors.
+        let tmp = TempDir::new().unwrap();
+        let disabled = AuditLogger::from_config(
+            &AuditConfig {
+                log_path: Some(tmp.path().join("ignored.jsonl")),
+                jsonl: false,
+            },
+            None,
+        )
+        .unwrap();
+        assert!(!disabled.is_enabled());
+        assert!(disabled.path().is_none());
+        assert!(format!("{disabled:?}").contains("AuditLogger"));
+
+        let summary = SweepSummary::from_rows(
+            "run-summary",
+            false,
+            vec![RuleSummaryRow {
+                rule: "logs".to_string(),
+                outcome: "ok".to_string(),
+                evaluated: 3,
+                acted: 1,
+                skipped_in_use: 1,
+                skipped_hook: 0,
+                kept_floor: 1,
+                bytes_freed: 512,
+                dry_run: false,
+                error: None,
+            }],
+        );
+        let pretty = summary.to_json_pretty().unwrap();
+        let compact = summary.to_json_compact().unwrap();
+        assert!(pretty.contains("\"run-summary\"") && compact.contains("\"total_acted\":1"));
+
+        let rich_entry = AuditEntry::new(AuditEventKind::HookExec, "run-rich", true)
+            .with_in_use_reasons(vec!["OsFlock".to_string()])
+            .with_actions(vec![])
+            .with_details(serde_json::json!({"ok": true}));
+        assert!(rich_entry.action.is_none());
+        assert_eq!(rich_entry.in_use_reasons.as_ref().unwrap().len(), 1);
+        assert!(rich_entry.details.is_some());
+
+        // `format_bytes_human` covers all magnitude tiers and `format_table` formats output cleanly.
+        assert_eq!(format_bytes_human(512), "512 B");
+        assert_eq!(format_bytes_human(2048), "2.00 KiB");
+        assert_eq!(format_bytes_human(2 * 1024 * 1024), "2.00 MiB");
+        assert_eq!(format_bytes_human(3 * 1024 * 1024 * 1024), "3.00 GiB");
+        assert_eq!(
+            format_bytes_human(2 * 1024 * 1024 * 1024 * 1024),
+            "2.00 TiB"
+        );
+        assert!(summary.format_table().contains("Totals:"));
+
+        // Opening an audit log beneath an existing regular file propagates `Io` error cleanly.
+        let blocker = tmp.path().join("file_blocker");
+        fs::write(&blocker, b"x").unwrap();
+        assert!(AuditLogger::open(blocker.join("audit.jsonl")).is_err());
     }
 }

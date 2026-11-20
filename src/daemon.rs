@@ -456,13 +456,13 @@ pub fn daemon_status(
     let (pid_file_present, pid, running, stale_pid) = if let Some(pf) = pid_file {
         if pf.exists() {
             let parsed_pid = read_pid_file(pf)?;
-            let alive = is_pid_alive(parsed_pid);
+            let alive = is_live_filecleaner_pid(parsed_pid);
             (true, Some(parsed_pid), alive, !alive)
         } else {
             (false, state.as_ref().map(|s| s.pid), false, false)
         }
     } else if let Some(st) = &state {
-        let alive = st.status != DaemonStatus::Stopped && is_pid_alive(st.pid);
+        let alive = st.status != DaemonStatus::Stopped && is_live_filecleaner_pid(st.pid);
         (false, Some(st.pid), alive, false)
     } else {
         (false, None, false, false)
@@ -872,6 +872,10 @@ fn is_filecleaner_process(pid: u32) -> bool {
     }
 }
 
+fn is_live_filecleaner_pid(pid: u32) -> bool {
+    is_pid_alive(pid) && is_filecleaner_process(pid)
+}
+
 #[cfg(windows)]
 fn is_windows_pid_alive(pid: u32) -> bool {
     // SAFETY: `OpenProcess` is invoked with `PROCESS_QUERY_LIMITED_INFORMATION` and returns either
@@ -949,7 +953,7 @@ fn register_signal_flag(flag: &Arc<AtomicBool>) -> Result<()> {
 fn claim_pid_file(pid_file: &Path, self_pid: u32) -> Result<()> {
     if pid_file.exists() {
         if let Ok(existing_pid) = read_pid_file(pid_file) {
-            if existing_pid != self_pid && is_pid_alive(existing_pid) {
+            if existing_pid != self_pid && is_live_filecleaner_pid(existing_pid) {
                 return Err(FileCleanerError::Daemon(format!(
                     "daemon already running with PID {existing_pid} ({})",
                     pid_file.display()
@@ -1396,7 +1400,15 @@ mod tests {
         cfg.daemon.sweep_on_start = false;
         let pid_path = cfg.daemon.pid_file.clone().unwrap();
 
-        // Live external PID (spawn a short-lived child process to test active PID collision).
+        // 1. Live `filecleaner` PID must block claiming the PID file.
+        let self_pid = std::process::id();
+        assert!(is_filecleaner_process(self_pid));
+        fs::write(&pid_path, format!("{self_pid}\n")).unwrap();
+        let dup_err = claim_pid_file(&pid_path, self_pid.wrapping_add(1)).unwrap_err();
+        assert!(matches!(dup_err, FileCleanerError::Daemon(_)));
+        assert!(dup_err.to_string().contains("daemon already running"));
+
+        // 2. Recycled foreign (non-filecleaner) PID must be reported stale and safely replaced.
         #[cfg(unix)]
         let mut sleeper = std::process::Command::new("sleep")
             .arg("5")
@@ -1409,22 +1421,12 @@ mod tests {
             .stderr(std::process::Stdio::null())
             .spawn()
             .unwrap();
-        let live_pid = sleeper.id();
-        fs::write(&pid_path, format!("{live_pid}\n")).unwrap();
+        fs::write(&pid_path, format!("{}\n", sleeper.id())).unwrap();
 
-        let err = DaemonRunner::run(
-            &cfg,
-            &DaemonOptions {
-                max_sweeps: Some(0),
-                ..DaemonOptions::default()
-            },
-        )
-        .unwrap_err();
-        assert!(matches!(err, FileCleanerError::Daemon(_)));
-        let _ = sleeper.kill();
-        let _ = sleeper.wait();
+        let foreign_status = daemon_status(Some(&pid_path), None).unwrap();
+        assert!(!foreign_status.running);
+        assert!(foreign_status.stale_pid);
 
-        // Now PID is dead -> stale PID file must be replaced cleanly.
         let final_state = DaemonRunner::run(
             &cfg,
             &DaemonOptions {
@@ -1435,6 +1437,9 @@ mod tests {
         .unwrap();
         assert_eq!(final_state.status, DaemonStatus::Stopped);
         assert!(!pid_path.exists());
+        assert!(sleeper.try_wait().unwrap().is_none());
+        let _ = sleeper.kill();
+        let _ = sleeper.wait();
     }
 
     #[test]
@@ -1795,5 +1800,166 @@ mod tests {
         assert!(sleep_child.try_wait().unwrap().is_none());
         let _ = sleep_child.kill();
         let _ = sleep_child.wait();
+    }
+
+    #[test]
+    fn daemon_covers_xml_escape_event_filters_multi_rule_watch_and_stop_paths() {
+        let tmp = TempDir::new().unwrap();
+        let watch_dir = tmp.path().join("watched");
+        fs::create_dir_all(&watch_dir).unwrap();
+
+        // 1. `xml_escape` covers all five XML special characters.
+        assert_eq!(
+            xml_escape("a&b<c>d\"e'f"),
+            "a&amp;b&lt;c&gt;d&quot;e&apos;f"
+        );
+
+        // 2. `effective_watch_mode` respects explicit mode, CLI override, and `daemon.watch`.
+        let mut d_cfg = DaemonConfig {
+            mode: DaemonMode::Interval,
+            watch: true,
+            ..DaemonConfig::default()
+        };
+        assert_eq!(effective_watch_mode(&d_cfg, None), DaemonMode::Hybrid);
+        assert_eq!(
+            effective_watch_mode(&d_cfg, Some(DaemonMode::Notify)),
+            DaemonMode::Notify
+        );
+        d_cfg.mode = DaemonMode::Hybrid;
+        assert_eq!(
+            effective_watch_mode(&DaemonConfig::default(), Some(DaemonMode::Interval)),
+            DaemonMode::Interval
+        );
+
+        // 3. `is_relevant_fs_event` & `build_ignored_paths` filter internal files and access events.
+        let audit_path = watch_dir.join("audit.jsonl");
+        let daemon_ctrl = DaemonConfig {
+            pid_file: Some(watch_dir.join("daemon.pid")),
+            state_file: Some(watch_dir.join("daemon.state.json")),
+            stop_file: Some(watch_dir.join("daemon.stop")),
+            ..DaemonConfig::default()
+        };
+        let ignored = build_ignored_paths(Some(&audit_path), &daemon_ctrl);
+        let access_ev = Event::new(EventKind::Access(notify::event::AccessKind::Read))
+            .add_path(watch_dir.join("data.log"));
+        assert!(!is_relevant_fs_event(&access_ev, &ignored));
+        let empty_ev = Event::new(EventKind::Any);
+        assert!(is_relevant_fs_event(&empty_ev, &ignored));
+        let tmp_ev = Event::new(EventKind::Any).add_path(watch_dir.join("x.fc-tmp.123"));
+        assert!(!is_relevant_fs_event(&tmp_ev, &ignored));
+        let audit_ev = Event::new(EventKind::Any).add_path(audit_path);
+        assert!(!is_relevant_fs_event(&audit_ev, &ignored));
+        let data_ev = Event::new(EventKind::Any).add_path(watch_dir.join("real.log"));
+        assert!(is_relevant_fs_event(&data_ev, &ignored));
+
+        // 4. `write_atomic_bytes_with_mode` cleans up `.fc-tmp` when parent is not a directory.
+        let file_blocker = tmp.path().join("blocker");
+        fs::write(&file_blocker, b"file").unwrap();
+        assert!(write_atomic_bytes(&file_blocker.join("state.json"), b"{}").is_err());
+
+        // 5. `start_fs_watcher` merges Recursive=false and Recursive=true rules on the same dir,
+        // and errors cleanly on missing rule directory.
+        let r1 = RuleConfig {
+            name: "r1".to_string(),
+            path: watch_dir.clone(),
+            enabled: true,
+            recursive: false,
+            max_depth: None,
+            follow_symlinks: false,
+            include_globs: vec![],
+            exclude_globs: vec![],
+            include_regex: None,
+            exclude_regex: None,
+            min_file_size: None,
+            max_file_size: None,
+            time_basis: TimeBasis::Modified,
+            filename_date_regex: None,
+            filename_date_format: None,
+            max_files: Some(10),
+            max_age: None,
+            max_total_size: None,
+            combine_mode: CombineMode::Any,
+            eviction_order: EvictionOrder::OldestFirst,
+            dry_run: false,
+            backup_guard: BackupGuardConfig::default(),
+            in_use: InUseConfig::default(),
+            pre_delete_hook: None,
+            actions: vec![ActionStep::Delete],
+            move_to: None,
+            move_date_subdir: None,
+            move_overwrite: false,
+            trash_dir: None,
+            compression: CompressionFormat::Gzip,
+            compression_level: None,
+            compress_remove_source: true,
+            compress_overwrite: false,
+            copy_truncate_to: None,
+            rename_template: None,
+        };
+        let mut r2 = r1.clone();
+        r2.name = "r2".to_string();
+        r2.recursive = true;
+        let multi_cfg = Config {
+            rules: vec![r1, r2],
+            ..Config::default()
+        };
+        let watcher = start_fs_watcher(&multi_cfg).unwrap();
+        drop(watcher);
+
+        let mut bad_cfg = multi_cfg.clone();
+        bad_cfg.rules[0].path = tmp.path().join("missing_watch_dir");
+        assert!(start_fs_watcher(&bad_cfg).is_err());
+
+        // 6. `DaemonRunner` with `sweep_on_start = false` & pre-existing stop_file exits immediately,
+        // and a broken rule path populates `state.last_error`.
+        let pre_stop = tmp.path().join("pre.stop");
+        fs::write(&pre_stop, b"stop").unwrap();
+        let mut stop_cfg = multi_cfg.clone();
+        stop_cfg.rules.pop();
+        stop_cfg.daemon.mode = DaemonMode::Interval;
+        stop_cfg.daemon.sweep_on_start = false;
+        stop_cfg.daemon.stop_file = Some(pre_stop.clone());
+        let st = DaemonRunner::run_with(
+            &stop_cfg,
+            &DaemonOptions::default(),
+            &SystemClock,
+            &OsLockProbe,
+            &ProcessHookRunner,
+        )
+        .unwrap();
+        assert_eq!(st.status, DaemonStatus::Stopped);
+        assert!(!pre_stop.exists());
+
+        bad_cfg.rules.pop();
+        bad_cfg.rules[0].path = file_blocker;
+        bad_cfg.daemon.mode = DaemonMode::Interval;
+        let err_st = DaemonRunner::run_with(
+            &bad_cfg,
+            &DaemonOptions {
+                max_sweeps: Some(1),
+                ..DaemonOptions::default()
+            },
+            &SystemClock,
+            &OsLockProbe,
+            &ProcessHookRunner,
+        )
+        .unwrap();
+        assert!(err_st.last_error.is_some());
+
+        // 7. Missing PID/stop paths and malformed PID / state files degrade cleanly.
+        assert!(daemon_status(None, None).is_err());
+        assert!(daemon_stop(None, None, Duration::from_secs(1)).is_err());
+
+        let bad_pid = tmp.path().join("bad_content.pid");
+        let bad_state = tmp.path().join("bad_content.state.json");
+        fs::write(&bad_pid, "not-a-number\n").unwrap();
+        fs::write(&bad_state, "{broken json").unwrap();
+        assert!(daemon_status(Some(&bad_pid), Some(&bad_state)).is_err());
+        assert!(daemon_status(Some(&bad_pid), None).is_err());
+
+        fs::write(&bad_pid, "0\n").unwrap();
+        let zero_rep = daemon_status(Some(&bad_pid), None).unwrap();
+        assert!(!zero_rep.running);
+        assert!(zero_rep.stale_pid);
     }
 }

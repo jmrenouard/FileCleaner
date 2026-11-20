@@ -5,7 +5,7 @@
 # FileCleaner v1.0.0 — Complete User & Operations Guide
 
 > **Language Editions**: **English** · [Français (`docs/fr/GUIDE_UTILISATEUR.md`)](../fr/GUIDE_UTILISATEUR.md)  
-> **Related Docs**: [README](../../README.md) · [Cookbook Examples](COOKBOOK_EXAMPLES.md) · [Formal Specifications](SPECIFICATIONS.md)
+> **Related Docs**: [README](../../README.md) · [5-Minute HOWTO](HOWTO.md) · [Cookbook Examples](COOKBOOK_EXAMPLES.md) · [Formal Specifications](SPECIFICATIONS.md)
 
 ---
 

@@ -631,13 +631,18 @@ impl Config {
                 )));
             }
 
-            if let Some(subdir_fmt) = &rule.move_date_subdir {
-                if subdir_fmt.trim().is_empty()
-                    || StrftimeItems::new(subdir_fmt).any(|item| matches!(item, Item::Error))
-                {
-                    return Err(FileCleanerError::ConfigValidation(format!(
-                        "rule '{trimmed_name}' has invalid move_date_subdir '{subdir_fmt}'"
-                    )));
+            for (field, maybe_fmt) in [
+                ("move_date_subdir", &rule.move_date_subdir),
+                ("rename_template", &rule.rename_template),
+            ] {
+                if let Some(fmt) = maybe_fmt {
+                    if fmt.trim().is_empty()
+                        || StrftimeItems::new(fmt).any(|item| matches!(item, Item::Error))
+                    {
+                        return Err(FileCleanerError::ConfigValidation(format!(
+                            "rule '{trimmed_name}' has invalid {field} '{fmt}'"
+                        )));
+                    }
                 }
             }
 
@@ -2010,7 +2015,7 @@ run_in_dry_run = true
         assert!(zero_daemon.validate().is_err());
 
         // Invalid filename_date_regex is rejected even when time_basis is Modified.
-        let mut bad_unused_fn_regex = minimal_rule("unused-fn-re", root);
+        let mut bad_unused_fn_regex = minimal_rule("unused-fn-re", root.clone());
         bad_unused_fn_regex.time_basis = TimeBasis::Modified;
         bad_unused_fn_regex.filename_date_regex = Some("(unclosed".to_string());
         assert!(matches!(
@@ -2021,5 +2026,56 @@ run_in_dry_run = true
             .validate(),
             Err(FileCleanerError::InvalidRegex { .. })
         ));
+
+        // Invalid or empty rename_template is rejected eagerly by Config::validate().
+        for bad_tpl in ["", "   ", "%Q"] {
+            let mut bad_rename_rule = minimal_rule("bad-rename", root.clone());
+            bad_rename_rule.actions = vec![ActionStep::RenameByDate];
+            bad_rename_rule.rename_template = Some(bad_tpl.to_string());
+            assert!(Config {
+                rules: vec![bad_rename_rule],
+                ..Config::default()
+            }
+            .validate()
+            .is_err());
+        }
+
+        // Empty audit_log and full TOML/YAML serialize round-trip (covering subsecond & None serde paths).
+        let mut bad_audit = Config {
+            audit_log: Some(PathBuf::new()),
+            rules: vec![minimal_rule("ok", root.clone())],
+            ..Config::default()
+        };
+        assert!(bad_audit.validate().is_err());
+
+        bad_audit.audit_log = None;
+        bad_audit.daemon.debounce = Duration::from_millis(250);
+        bad_audit.rules[0].max_file_size = Some(4096);
+        bad_audit.rules[0].rename_template = Some("%Y-%m-%d_%H%M%S".to_string());
+        let toml_ser = toml::to_string(&bad_audit).unwrap();
+        let yaml_ser = serde_yaml_ng::to_string(&bad_audit).unwrap();
+        let toml_back: Config = toml::from_str(&toml_ser).unwrap();
+        let yaml_back: Config = serde_yaml_ng::from_str(&yaml_ser).unwrap();
+        toml_back.validate().unwrap();
+        yaml_back.validate().unwrap();
+        assert_eq!(toml_back.daemon.debounce, Duration::from_millis(250));
+        assert_eq!(yaml_back.rules[0].max_file_size, Some(4096));
+
+        // Relative `.` / `..` lexical path resolution and regex directory exclusion inside recursive tree.
+        let cwd = std::env::current_dir().unwrap();
+        let lex = resolve_path_lexically(Path::new("./sub/../missing_leaf"));
+        assert!(lex.starts_with(&cwd) || lex.ends_with("missing_leaf"));
+
+        let mut regex_excl_rule = minimal_rule("regex-excl", root.clone());
+        regex_excl_rule.recursive = true;
+        regex_excl_rule.actions = vec![ActionStep::Move];
+        regex_excl_rule.move_to = Some(root.join("archive/2026"));
+        regex_excl_rule.exclude_regex = Some("^archive(/|$)".to_string());
+        Config {
+            rules: vec![regex_excl_rule],
+            ..Config::default()
+        }
+        .validate()
+        .unwrap();
     }
 }
