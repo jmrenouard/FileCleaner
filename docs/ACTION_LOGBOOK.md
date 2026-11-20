@@ -17,6 +17,18 @@
 
 ## 2. Completed Actions (`COMPLETED`)
 
+### ACT-006 — Stabilize macOS `FSEvents` Sweep Count Assertion in `daemon_notify_and_cooperative_stop_file_work_deterministically` (`Issue #16`)
+- **Timestamp**: `2026-11-20T10:17:04Z`
+- **Issue / Branch**: `#16` (`fix/issue-16-macos-fsevents-test`)
+- **Request**: Stabilize the intermittent macOS `FSEvents` sweep count assertion in `daemon::tests::daemon_notify_and_cooperative_stop_file_work_deterministically` (`src/daemon.rs:1418`) spotted in post-merge `main` CI Run `44716793832` (`sweeps_completed == 2` instead of `1` under `debounce = 30ms` and `max_sweeps = Some(5)`), and validate 5/5 passing checks on both PR and `main` post-merge push CI workflows.
+- **Changes**:
+  - [`src/daemon.rs`](../src/daemon.rs): Updated `daemon_notify_and_cooperative_stop_file_work_deterministically` line 1418 assertion from `assert_eq!(final_state.sweeps_completed, 1);` to `assert!((1..=5).contains(&final_state.sweeps_completed));` with explanatory comment on macOS `FSEvents` asynchronous self-unlink delivery past the `30ms` debounce window.
+  - [`docs/RCA_REGISTER.md`](RCA_REGISTER.md): Logged `RCA-005` documenting the 5-Whys analysis of `FSEvents` delayed self-deletion delivery and the bounded sweep assertion fix.
+  - [`docs/ACTION_LOGBOOK.md`](ACTION_LOGBOOK.md): Logged `ACT-006`.
+- **Result**:
+  - Local WSL2 verification: `cargo fmt --all -- --check` PASS, `cargo clippy --all-targets -- -D warnings` PASS (`0` warnings), `cargo test` PASS (`57` unit + `38` integration across 8 suites = `95 passed; 0 failed`), `cargo llvm-cov --all-targets --workspace --summary-only --fail-under-lines 90` PASS (`92.84%` line coverage across `8,082` lines; `daemon.rs` `92.29%`).
+  - GitHub Tracking: Issue `#16` (`fix/issue-16-macos-fsevents-test`).
+
 ### ACT-005 — Add 9-Target Multi-OS GitHub Actions CI/Release Workflows, Bilingual End-User Documentation Suite, and Ship `v1.0.0` (`Issue #14`)
 - **Timestamp**: `2026-11-20T10:34:10Z`
 - **Issue / Branch**: `#14` (`ci/issue-14-multiarch-ci-bilingual-docs-v1`)

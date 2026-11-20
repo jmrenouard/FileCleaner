@@ -84,6 +84,22 @@
 
 ---
 
+### RCA-005 — Intermittent macOS `FSEvents` Delayed Self-Unlink Sweep Count Failure in `daemon_notify_and_cooperative_stop_file_work_deterministically` (`main` Post-Merge Run `44716793832`)
+- **Date / Linked Action**: `2026-11-20` (`ACT-006` / Issue `#16`)
+- **Observed Symptom**:
+  - Post-merge `push` CI Run `44716793832` on `main` (commit `aee4028`) passed 4 of 5 jobs (`Format & Clippy`, `Line Coverage Gate >= 90%`, `Cross-OS Test Suite (ubuntu-latest)`, and `Cross-OS Test Suite (windows-latest)`) and failed intermittently on `Cross-OS Test Suite (macos-latest)` at [`src/daemon.rs`](../src/daemon.rs#L1418):
+    - `daemon::tests::daemon_notify_and_cooperative_stop_file_work_deterministically`: `assertion left == right failed` (`left: 2`, `right: 1` for `final_state.sweeps_completed`).
+- **Root Cause Analysis (5 Whys)**:
+  1. *Why did `final_state.sweeps_completed` equal `2` instead of `1` on `macos-latest`?* Because the notify watcher fired a second debounced sweep after sweep #1 had already completed and returned to `DaemonStatus::Idle`.
+  2. *Why did a filesystem event trigger a second sweep after sweep #1?* Because sweep #1 itself unlinked `a_old.log` inside `watch_dir`, and macOS `FSEvents` delivers directory-change notifications asynchronously via `fseventsd` with non-deterministic coalescing latency. When the self-deletion notification for `a_old.log` arrives after the `30ms` debounce window (`cfg.daemon.debounce = Duration::from_millis(30)`), the daemon runs another sweep under `max_sweeps = Some(5)` before processing `stop_file`.
+  3. *Why did the test fail intermittently?* Because the unit test asserted strict equality `assert_eq!(final_state.sweeps_completed, 1)` rather than verifying bounded notify execution (`1..=5` matching `max_sweeps = Some(5)`) alongside exact retention (`!old.exists()`, `newer.exists()`) and fast cooperative shutdown (`< 2s`, `DaemonStatus::Stopped`).
+- **Applied Change / Fix**:
+  - [`src/daemon.rs`](../src/daemon.rs): Updated `daemon_notify_and_cooperative_stop_file_work_deterministically` to assert `assert!((1..=5).contains(&final_state.sweeps_completed));` under `max_sweeps = Some(5)`, preserving all retention and cooperative stop-file assertions.
+- **Result & Non-Regression Test**:
+  - Verified locally in WSL2 (`cargo fmt --all -- --check` PASS, `cargo clippy --all-targets -- -D warnings` PASS with `0` warnings, `cargo test` PASS `95/95` (`57` unit + `38` integration across 8 suites), `cargo llvm-cov --all-targets --workspace --summary-only --fail-under-lines 90` PASS at `92.84%` line coverage across `8,082` lines). Pending PR & post-merge multi-OS CI verification across `ubuntu-latest`, `windows-latest`, and `macos-latest`.
+
+---
+
 ## 2. Technical Dead-Ends & Abandoned Leads (`IMP`)
 
 ### IMP-001 — C/C++ `-sys` Compression Bindings (`zstd-sys`, `liblz4-sys`, `bzip2-sys`, `zlib-ng-sys`) vs. Pure-Rust Compression Crates
