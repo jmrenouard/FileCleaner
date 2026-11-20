@@ -35,6 +35,7 @@
   - `cargo test`: PASS (`57` unit tests + `37` integration tests across 8 suites = `94 passed; 0 failed`).
   - `cargo llvm-cov --all-targets --workspace --summary-only --fail-under-lines 90`: PASS (`92.67%`–`92.68%` line coverage across `8,075` lines: `actions.rs` `88.80%`, `audit.rs` `95.73%`, `cli.rs` `91.87%`, `config.rs` `94.69%`, `daemon.rs` `92.53%`, `engine.rs` `97.39%`, `error.rs` `100.00%`, `hooks.rs` `94.22%`, `in_use.rs` `87.56%`, `main.rs` `100.00%`, `policy.rs` `92.99%`, `scanner.rs` `90.79%`).
   - Independent Audit: Approved by `@verifier` (`94/94` passed, `92.67%` line coverage).
+  - GitHub Tracking: Issue `#12` / PR `#13` (`feat/issue-12-engine-cli-daemon`).
 
 ### ACT-003 — Implement Lifecycle Action Pipeline, Pure-Rust Compression, Pre-Delete Hooks, and JSONL Audit Log (`Issue #8`)
 - **Timestamp**: `2026-11-20T10:03:39Z`
