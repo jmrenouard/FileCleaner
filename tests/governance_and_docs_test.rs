@@ -347,14 +347,14 @@ fn validate_well_formed_xml_svg(path: &Path, xml: &str) -> std::result::Result<(
 }
 
 #[test]
-fn cargo_manifest_enforces_version_1_0_0_and_pure_rust_contract() {
+fn cargo_manifest_enforces_version_and_pure_rust_contract() {
     let manifest_path = manifest_dir().join("Cargo.toml");
     let raw = fs::read_to_string(&manifest_path).unwrap();
     let parsed: toml::Value = toml::from_str(&raw).unwrap();
 
     let pkg = parsed["package"].as_table().unwrap();
     assert_eq!(pkg["name"].as_str(), Some("filecleaner"));
-    assert_eq!(pkg["version"].as_str(), Some("1.0.0"));
+    assert_eq!(pkg["version"].as_str(), Some("1.0.1"));
     assert_eq!(pkg["license"].as_str(), Some("Apache-2.0"));
 
     let deps = parsed["dependencies"].as_table().unwrap();
@@ -448,6 +448,7 @@ fn github_workflows_pin_actions_to_full_shas_and_avoid_run_interpolation() {
     let workflow_paths = [
         root.join(".github/workflows/ci.yml"),
         root.join(".github/workflows/release.yml"),
+        root.join(".github/workflows/docker-publish.yml"),
     ];
 
     for wf_path in &workflow_paths {
@@ -470,6 +471,14 @@ fn github_workflows_pin_actions_to_full_shas_and_avoid_run_interpolation() {
                     assert!(
                         sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit()),
                         "{} job '{job_name}' step #{idx} must pin action to a 40-char hex SHA, got '{uses_val}'",
+                        wf_path.display()
+                    );
+                }
+
+                if let Some(if_val) = step.get("if").and_then(|v| v.as_str()) {
+                    assert!(
+                        !if_val.contains("secrets."),
+                        "{} job '{job_name}' step #{idx} must not reference secrets directly inside if:",
                         wf_path.display()
                     );
                 }
@@ -497,6 +506,47 @@ fn github_workflows_pin_actions_to_full_shas_and_avoid_run_interpolation() {
         Some("write"),
         "release.yml publish-release job must scope contents: write"
     );
+
+    let docker_raw = fs::read_to_string(&workflow_paths[2]).unwrap();
+    let docker_doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(&docker_raw).unwrap();
+    assert_eq!(
+        docker_doc["permissions"]["contents"].as_str(),
+        Some("read"),
+        "docker-publish.yml must default to contents: read"
+    );
+    let trigger_block = docker_raw.split("jobs:").next().unwrap_or("");
+    assert!(trigger_block.contains("types: [published]"));
+    assert!(trigger_block.contains("workflow_dispatch:"));
+    assert!(!trigger_block.contains("push:"));
+    assert!(!trigger_block.contains("tags:"));
+    assert!(docker_raw.contains("jmrenouard/filecleaner"));
+    assert!(docker_raw.contains("linux/amd64,linux/arm64"));
+}
+
+#[test]
+fn docker_packaging_enforces_security_and_multistage_standards() {
+    let root = manifest_dir();
+    let dockerfile = fs::read_to_string(root.join("Dockerfile")).expect("Dockerfile must exist");
+    let dockerignore =
+        fs::read_to_string(root.join(".dockerignore")).expect(".dockerignore must exist");
+
+    assert!(dockerfile.contains("FROM --platform=$BUILDPLATFORM rust:1.100.0-bookworm AS builder"));
+    assert!(dockerfile.contains("FROM debian:bookworm-slim AS runtime"));
+    assert!(!dockerfile.contains(":latest"));
+    assert!(dockerfile.contains("groupadd -g 10001 fcgroup"));
+    assert!(dockerfile.contains("useradd -u 10001 -g fcgroup"));
+    assert!(dockerfile.contains("USER fcuser"));
+    assert!(dockerfile.contains("HEALTHCHECK"));
+    assert!(dockerfile.contains("ENTRYPOINT [\"/usr/local/bin/filecleaner\"]"));
+    assert!(dockerfile.contains("VOLUME"));
+    assert!(dockerfile.contains("Apache-2.0"));
+
+    for pat in [".git", "target", "tests", ".agents", "dist", "coverage"] {
+        assert!(
+            dockerignore.lines().any(|l| l.trim() == pat),
+            ".dockerignore must exclude '{pat}'"
+        );
+    }
 }
 
 fn heading_signature_outside_fences(markdown: &str) -> Vec<usize> {

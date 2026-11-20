@@ -2,7 +2,7 @@
   <img src="../assets/header-banner.svg" alt="FileCleaner — Exemples & Recettes de Production" width="100%" />
 </div>
 
-# FileCleaner v1.0.0 — Exemples & Recettes de Production
+# FileCleaner v1.0.1 — Exemples & Recettes de Production
 
 > **Éditions linguistiques** : [English (`docs/en/COOKBOOK_EXAMPLES.md`)](../en/COOKBOOK_EXAMPLES.md) · **Français**  
 > **Documents associés** : [README](../../README.fr.md) · [HOWTO 5 minutes](HOWTO.md) · [Guide utilisateur](GUIDE_UTILISATEUR.md) · [Spécifications formelles](SPECIFICATIONS.md)

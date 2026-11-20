@@ -9,6 +9,7 @@
 <div align="center">
 
 [![Release](https://img.shields.io/github/v/release/jmrenouard/FileCleaner?style=flat-square&logo=github&color=0ea5e9)](https://github.com/jmrenouard/FileCleaner/releases)
+[![Docker Hub](https://img.shields.io/docker/v/jmrenouard/filecleaner?sort=semver&style=flat-square&logo=docker&color=2563eb&label=Docker%20Hub)](https://hub.docker.com/r/jmrenouard/filecleaner)
 [![CI](https://github.com/jmrenouard/FileCleaner/actions/workflows/ci.yml/badge.svg)](https://github.com/jmrenouard/FileCleaner/actions/workflows/ci.yml)
 [![Pure Rust](https://img.shields.io/badge/Rust-2021_Pure--Rust-10b981?style=flat-square&logo=rust)](Cargo.toml)
 [![Tests](https://img.shields.io/badge/Tests-124_Réussis-3b82f6?style=flat-square)](docs/ACTION_LOGBOOK.md)
@@ -56,7 +57,7 @@
 
 Les scripts cron ad hoc et outils historiques de rotation provoquent régulièrement des incidents silencieux en production à travers quatre failles structurelles :
 
-| Risque de production | Comportement fragile (`find` / Shell / `logrotate`) | Garantie FileCleaner v1.0.0 |
+| Risque de production | Comportement fragile (`find` / Shell / `logrotate`) | Garantie FileCleaner v1.0.1 |
 | :--- | :--- | :--- |
 | **Effacement silencieux de la dernière sauvegarde** | Lorsqu'un `pg_dump` ou `mysqldump` échoue en silence pendant deux semaines, `find -mtime +14 -delete` supprime la **dernière sauvegarde saine survivante**, ne laissant qu'un répertoire vide ou des fichiers de 0 octet. | **Garde-fous de sauvegarde** : Exclut les ébauches sous `min_valid_backup_bytes`, verrouille le plancher minimal `min_keep_files`, et déclenche un **gel « homme-mort »** (`require_newer_within` / `freeze_if_newest_older_than`) dès qu'aucune sauvegarde valide récente n'existe. |
 | **Corruption en cours d'écriture** | Les passes cron suppriment ou déplacent des transferts incomplets, des journaux actifs ou des dumps encore ouverts par `rsync`, `tar`, `mysqldump` ou une application. | **Matrice de détection en 6 couches** : Combine marqueurs annexes (`.part`/`.lock`), verrou `flock(LOCK_EX \| LOCK_NB)`, analyse `/proc/*/fd` sous Linux, `share_mode(0)` sous Windows, délai `min_idle_age` et fenêtre de stabilité `(size, mtime)` en deux points. |
@@ -112,15 +113,19 @@ flowchart LR
 
 ## Démarrage rapide CLI
 
-### Installation depuis les binaires officiels ou les sources
+### Installation via Docker Hub, Cargo ou binaires officiels
 
 ```bash
-# Option 1 : Compiler et installer via Cargo (Rust >= 1.75 / Édition 2021)
-cargo install --git https://github.com/jmrenouard/FileCleaner --locked
+# Option 1 : Exécuter l'image multiplateforme directement depuis Docker Hub (linux/amd64 & linux/arm64)
+docker run --rm jmrenouard/filecleaner:latest --version
+docker run --rm -v "$(pwd)/data:/data" jmrenouard/filecleaner:latest plan --dir /data --max-age 14d
 
-# Option 2 : Télécharger un binaire précompilé sur GitHub Releases (ex. Linux x86_64 musl)
-curl -LO https://github.com/jmrenouard/FileCleaner/releases/download/v1.0.0/filecleaner-v1.0.0-x86_64-unknown-linux-musl.tar.gz
-tar -xzf filecleaner-v1.0.0-x86_64-unknown-linux-musl.tar.gz
+# Option 2 : Compiler et installer via Cargo (Rust >= 1.75 / Édition 2021)
+cargo install --git https://github.com/jmrenouard/FileCleaner --tag v1.0.1 --locked
+
+# Option 3 : Télécharger un binaire précompilé sur GitHub Releases (ex. Linux x86_64 musl)
+curl -LO https://github.com/jmrenouard/FileCleaner/releases/download/v1.0.1/filecleaner-v1.0.1-x86_64-unknown-linux-musl.tar.gz
+tar -xzf filecleaner-v1.0.1-x86_64-unknown-linux-musl.tar.gz
 sudo install -m 0755 filecleaner /usr/local/bin/filecleaner
 ```
 

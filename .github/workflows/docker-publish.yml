@@ -1,0 +1,102 @@
+name: Publish Docker Image to Docker Hub
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Optional release tag override (e.g. v1.0.1)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-publish-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  docker-publish:
+    name: Build & Publish Multi-Platform Docker Image
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Preflight Docker Hub credentials check
+        id: docker_preflight
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME || secrets.DOCKER_USER_LOGIN || secrets.DOCKER_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN || secrets.DOCKER_USER_PASSWORD || secrets.DOCKER_PASSWORD }}
+        run: |
+          U=$(printf "%s" "$DOCKERHUB_USERNAME" | tr -d '\r\n ')
+          T=$(printf "%s" "$DOCKERHUB_TOKEN" | tr -d '\r\n ')
+          if [ -n "$U" ] && [ -n "$T" ]; then
+            echo "can_publish=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "can_publish=false" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Docker Hub Credentials Not Configured::Secret not configured. Image built locally without push."
+
+      - name: Log in to Docker Hub
+        if: steps.docker_preflight.outputs.can_publish == 'true'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME || secrets.DOCKER_USER_LOGIN || secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN || secrets.DOCKER_USER_PASSWORD || secrets.DOCKER_PASSWORD }}
+
+      - name: Resolve Image Tags and Release Notes
+        id: resolve_tags
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          REF_NAME: ${{ github.ref_name }}
+          IS_PRERELEASE: ${{ github.event.release.prerelease }}
+        run: |
+          RAW_TAG="${INPUT_TAG:-${RELEASE_TAG:-$REF_NAME}}"
+          CLEAN_TAG="${RAW_TAG#v}"
+          if [ -n "$CLEAN_TAG" ] && [ "$CLEAN_TAG" != "main" ] && [ "$CLEAN_TAG" != "master" ]; then
+            VERSION="$CLEAN_TAG"
+          else
+            VERSION=$(sed -nE 's/^version = "([^"]+)"/\1/p' Cargo.toml | head -n 1 | tr -d '[:space:]')
+          fi
+          IMAGE="jmrenouard/filecleaner"
+          TAGS="${IMAGE}:v${VERSION},${IMAGE}:${VERSION}"
+          if [ "$IS_PRERELEASE" != "true" ]; then
+            TAGS="${IMAGE}:latest,${TAGS}"
+          fi
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          if [ -f "docs/RELEASE_NOTES_v${VERSION}.md" ]; then
+            NOTES_SUMMARY=$(head -n 20 "docs/RELEASE_NOTES_v${VERSION}.md" | tr '\r\n' ' ')
+          else
+            NOTES_SUMMARY="FileCleaner v${VERSION}"
+          fi
+          echo "release_notes=${NOTES_SUMMARY}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push multi-platform Docker image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ steps.docker_preflight.outputs.can_publish == 'true' }}
+          tags: ${{ steps.resolve_tags.outputs.tags }}
+          labels: |
+            org.opencontainers.image.title=FileCleaner
+            org.opencontainers.image.description=Deterministic Rust directory retention engine with backup safety guardrails, 6-layer active-file detection, lifecycle hooks, pure-Rust compression, and daemon mode
+            org.opencontainers.image.version=${{ steps.resolve_tags.outputs.version }}
+            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.url=https://hub.docker.com/r/jmrenouard/filecleaner
+            org.opencontainers.image.source=https://github.com/jmrenouard/FileCleaner
+            com.filecleaner.release-notes=${{ steps.resolve_tags.outputs.release_notes }}

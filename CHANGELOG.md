@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+---
+
+## [1.0.1] - 2026-11-20
+
+### Added & Hardened
+
+- **Multi-Arch Docker Hub Container Packaging & CI Publishing (`Dockerfile`, `.dockerignore`, `.github/workflows/docker-publish.yml`)**: Added hardened multi-stage Alpine/Debian-slim container (`rust:1.100.0-bookworm` builder -> non-root `debian:bookworm-slim` runtime UID/GID `10001` `fcuser:fcgroup`, `HEALTHCHECK`, `VOLUME` mountpoints, bundled `examples/`) and SHA-pinned Buildx workflow publishing `jmrenouard/filecleaner` (`latest`, `v1.0.1`, `1.0.1`) across `linux/amd64` and `linux/arm64` on release publication or manual dispatch.
+- **Enterprise Release Notes (`docs/RELEASE_NOTES_v1.0.1.md`) & Bilingual Sync**: Updated `README.md`, `README.fr.md`, and EN/FR guides with `v1.0.1` binary archives and Docker Hub Quickstart commands.
+
 ### Post-v1.0.1 Audit, Coverage & Documentation (Issue #20)
 
 - **Hook Stderr Drain Protection (`src/hooks.rs`)**: Replaced unbounded/channel stderr forwarding with a bounded `Arc<Mutex<Vec<u8>>>` buffer (`MAX_HOOK_STDERR_BYTES = 64 KiB`, UTF-8 char-boundary safe truncation) and bounded EOF drain grace (`STDERR_DRAIN_GRACE`) so failing hooks that spawn lingering background grandchildren still preserve their diagnostic `stderr` without blocking.

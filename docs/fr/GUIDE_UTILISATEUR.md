@@ -2,7 +2,7 @@
   <img src="../assets/header-banner.svg" alt="FileCleaner — Guide Utilisateur" width="100%" />
 </div>
 
-# FileCleaner v1.0.0 — Guide Utilisateur & Manuel d'Exploitation Complet
+# FileCleaner v1.0.1 — Guide Utilisateur & Manuel d'Exploitation Complet
 
 > **Éditions linguistiques** : [English (`docs/en/USER_GUIDE.md`)](../en/USER_GUIDE.md) · **Français**  
 > **Documents associés** : [README](../../README.fr.md) · [HOWTO 5 minutes](HOWTO.md) · [Exemples & Recettes](EXEMPLES_RECETTES.md) · [Spécifications formelles](SPECIFICATIONS.md)
@@ -33,20 +33,20 @@ Téléchargez l'archive adaptée à votre système depuis [GitHub Releases](http
 
 | OS | Architecture | Cible Rust (Triple) | Archive |
 | :--- | :--- | :--- | :--- |
-| Linux (glibc) | `x86_64` | `x86_64-unknown-linux-gnu` | `filecleaner-v1.0.0-x86_64-unknown-linux-gnu.tar.gz` |
-| Linux (statique `musl`) | `x86_64` | `x86_64-unknown-linux-musl` | `filecleaner-v1.0.0-x86_64-unknown-linux-musl.tar.gz` |
-| Linux (glibc) | `ARM64` | `aarch64-unknown-linux-gnu` | `filecleaner-v1.0.0-aarch64-unknown-linux-gnu.tar.gz` |
-| Linux (statique `musl`) | `ARM64` | `aarch64-unknown-linux-musl` | `filecleaner-v1.0.0-aarch64-unknown-linux-musl.tar.gz` |
-| Linux (hard-float) | `ARMv7` | `armv7-unknown-linux-gnueabihf` | `filecleaner-v1.0.0-armv7-unknown-linux-gnueabihf.tar.gz` |
-| Windows (MSVC) | `x86_64` | `x86_64-pc-windows-msvc` | `filecleaner-v1.0.0-x86_64-pc-windows-msvc.zip` |
-| Windows (ARM64 MSVC) | `ARM64` | `aarch64-pc-windows-msvc` | `filecleaner-v1.0.0-aarch64-pc-windows-msvc.zip` |
-| macOS (Apple Silicon) | `ARM64` | `aarch64-apple-darwin` | `filecleaner-v1.0.0-aarch64-apple-darwin.tar.gz` |
-| macOS (Intel) | `x86_64` | `x86_64-apple-darwin` | `filecleaner-v1.0.0-x86_64-apple-darwin.tar.gz` |
+| Linux (glibc) | `x86_64` | `x86_64-unknown-linux-gnu` | `filecleaner-v1.0.1-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux (statique `musl`) | `x86_64` | `x86_64-unknown-linux-musl` | `filecleaner-v1.0.1-x86_64-unknown-linux-musl.tar.gz` |
+| Linux (glibc) | `ARM64` | `aarch64-unknown-linux-gnu` | `filecleaner-v1.0.1-aarch64-unknown-linux-gnu.tar.gz` |
+| Linux (statique `musl`) | `ARM64` | `aarch64-unknown-linux-musl` | `filecleaner-v1.0.1-aarch64-unknown-linux-musl.tar.gz` |
+| Linux (hard-float) | `ARMv7` | `armv7-unknown-linux-gnueabihf` | `filecleaner-v1.0.1-armv7-unknown-linux-gnueabihf.tar.gz` |
+| Windows (MSVC) | `x86_64` | `x86_64-pc-windows-msvc` | `filecleaner-v1.0.1-x86_64-pc-windows-msvc.zip` |
+| Windows (ARM64 MSVC) | `ARM64` | `aarch64-pc-windows-msvc` | `filecleaner-v1.0.1-aarch64-pc-windows-msvc.zip` |
+| macOS (Apple Silicon) | `ARM64` | `aarch64-apple-darwin` | `filecleaner-v1.0.1-aarch64-apple-darwin.tar.gz` |
+| macOS (Intel) | `x86_64` | `x86_64-apple-darwin` | `filecleaner-v1.0.1-x86_64-apple-darwin.tar.gz` |
 
 #### Installation & vérification SHA-256 sous Linux / macOS
 
 ```bash
-VERSION="v1.0.0"
+VERSION="v1.0.1"
 TARGET="x86_64-unknown-linux-musl"   # ou aarch64-apple-darwin, etc.
 
 curl -fLO "https://github.com/jmrenouard/FileCleaner/releases/download/${VERSION}/filecleaner-${VERSION}-${TARGET}.tar.gz"
@@ -61,7 +61,7 @@ filecleaner --version
 #### Installation & vérification SHA-256 sous Windows PowerShell
 
 ```powershell
-$Version = "v1.0.0"
+$Version = "v1.0.1"
 $Target  = "x86_64-pc-windows-msvc"
 $Archive = "filecleaner-$Version-$Target.zip"
 
@@ -80,13 +80,25 @@ Requiert Rust Édition 2021 (`rustc >= 1.75`). Grâce à l'absence totale de cra
 
 ```bash
 # Installation directe depuis GitHub
-cargo install --git https://github.com/jmrenouard/FileCleaner --tag v1.0.0 --locked
+cargo install --git https://github.com/jmrenouard/FileCleaner --tag v1.0.1 --locked
 
 # Ou compilation locale depuis le dépôt
 git clone https://github.com/jmrenouard/FileCleaner.git
 cd FileCleaner
 cargo build --release --locked
 ./target/release/filecleaner --help
+```
+
+### 1.3 Exécution via Docker Hub (`jmrenouard/filecleaner`)
+
+Les images multiplateformes (`linux/amd64` et `linux/arm64`) s'exécutent sous l'utilisateur non privilégié UID/GID `10001` (`fcuser:fcgroup`) avec les exemples fournis sous `/etc/filecleaner/examples/` :
+
+```bash
+# Vérifier la version de l'image
+docker run --rm jmrenouard/filecleaner:1.0.1 --version
+
+# Simuler un nettoyage sur un dossier hôte monté dans /data
+docker run --rm -v "$(pwd)/data:/data" jmrenouard/filecleaner:1.0.1 plan --dir /data --max-age 14d
 ```
 
 ---
