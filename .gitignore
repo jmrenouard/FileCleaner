@@ -1,0 +1,31 @@
+# Rust / Cargo build outputs (never commit or stage inside workspace)
+/target/
+**/*.rs.bk
+*.pdb
+
+# FileCleaner runtime & test artifacts
+*.fc-tmp
+*.pid
+*.log
+
+# Coverage & profiling artifacts
+coverage/
+lcov.info
+*.profraw
+*.profdata
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Environment variables & local KeePass vaults
+.env
+.env.*
+!.env.example
+*.kdbx
+*.keyx
+
+# Agent teamwork metadata
+.agents/teamwork/
