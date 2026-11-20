@@ -1,0 +1,76 @@
+# FileCleaner Production Example: PostgreSQL Nightly Backups Retention
+# Features: FilenameDate parsing, BackupGuard floor + staleness freeze,
+#           pre-delete S3 archival hook, Gzip compression, and dated Move.
+
+dry_run = false
+global_trash_dir = "/var/tmp/filecleaner-trash"
+
+[daemon]
+mode = "hybrid"
+interval = "5m"
+watch = true
+debounce = "2s"
+sweep_on_start = true
+pid_file = "/run/filecleaner/postgres-backups.pid"
+state_file = "/run/filecleaner/postgres-backups-state.json"
+stop_file = "/run/filecleaner/postgres-backups.stop"
+
+[audit]
+log_path = "/var/log/filecleaner/postgres-backups-audit.jsonl"
+jsonl = true
+
+[[rules]]
+name = "pg-backups"
+path = "/var/backups/postgres"
+enabled = true
+recursive = true
+max_depth = 2
+follow_symlinks = false
+include_globs = ["*.sql", "*.sql.gz", "*.dump"]
+exclude_globs = ["pinned/**", "*.keep"]
+min_file_size = "1KiB"
+
+time_basis = "filename_date"
+filename_date_regex = 'pg_(\d{8}_\d{6})'
+filename_date_format = "%Y%m%d_%H%M%S"
+
+max_files = 14
+max_age = "30d"
+max_total_size = "50GiB"
+combine_mode = "any"
+eviction_order = "oldest_first"
+
+actions = ["compress", "move"]
+compression = "gzip"
+compression_level = 6
+compress_remove_source = true
+compress_overwrite = false
+move_to = "/mnt/cold-archive/postgres"
+move_date_subdir = "%Y/%m"
+move_overwrite = false
+
+[rules.backup_guard]
+enabled = true
+min_keep_files = 7
+min_valid_backup_bytes = "1MiB"
+require_newer_within = "36h"
+freeze_on_empty_valid = true
+
+[rules.in_use]
+enabled = true
+check_sidecar_locks = true
+check_os_locks = true
+check_proc_fd = true
+min_idle_age = "10s"
+stability_window = "2s"
+
+[rules.pre_delete_hook]
+command = "examples/hooks/archive_to_s3_mock.sh"
+args = ["--file", "{path}", "--rule", "{rule}", "--size", "{size}"]
+timeout = "30s"
+on_failure = "abort_file"
+skip_exit_code = 42
+run_in_dry_run = false
+
+[rules.pre_delete_hook.env]
+FILECLEANER_S3_MOCK_DIR = "/mnt/cold-archive/s3-mock"

@@ -1,0 +1,65 @@
+# FileCleaner Production Example: Application Log Rotation & Archival
+# Features: Explicit opt-in CopyTruncate with LZ4 compression for open writer logs,
+#           paired with RenameByDate -> Brotli compression -> Trash cleanup.
+
+dry_run = false
+global_trash_dir = "/var/tmp/filecleaner-trash"
+
+[daemon]
+mode = "interval"
+interval = "10m"
+watch = false
+sweep_on_start = true
+
+[audit]
+log_path = "/var/log/filecleaner/app-logs-audit.jsonl"
+jsonl = true
+
+[[rules]]
+name = "app-active-logs"
+path = "/var/log/myapp"
+enabled = true
+recursive = false
+follow_symlinks = false
+include_globs = ["*.log"]
+exclude_globs = ["rotated/**"]
+min_file_size = "10MiB"
+time_basis = "modified"
+max_total_size = "500MiB"
+combine_mode = "any"
+eviction_order = "largest_first"
+
+# CopyTruncate explicitly targets active append-only logs; disable OS lock/FD
+# probes that would otherwise flag the running application descriptor as busy.
+[rules.in_use]
+enabled = true
+check_sidecar_locks = true
+check_os_locks = false
+check_proc_fd = false
+min_idle_age = "5s"
+
+actions = ["copy_truncate"]
+copy_truncate_to = "/var/log/myapp/rotated"
+compression = "lz4"
+rename_template = "%Y%m%d_%H%M%S"
+
+[[rules]]
+name = "app-rotated-archive"
+path = "/var/log/myapp/rotated"
+enabled = true
+recursive = false
+follow_symlinks = false
+include_globs = ["*.log", "*.log.lz4"]
+time_basis = "modified"
+max_age = "30d"
+max_total_size = "10GiB"
+combine_mode = "any"
+eviction_order = "oldest_first"
+
+actions = ["rename_by_date", "compress", "trash"]
+rename_template = "%Y%m%d_%H%M%S"
+compression = "brotli"
+compression_level = 6
+compress_remove_source = true
+compress_overwrite = false
+trash_dir = "/var/tmp/filecleaner-trash/app-logs"
