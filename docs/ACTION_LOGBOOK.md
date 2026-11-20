@@ -17,6 +17,19 @@
 
 ## 2. Completed Actions (`COMPLETED`)
 
+### ACT-005 — Add 9-Target Multi-OS GitHub Actions CI/Release Workflows, Bilingual End-User Documentation Suite, and Ship `v1.0.0` (`Issue #14`)
+- **Timestamp**: `2026-11-20T10:34:10Z`
+- **Issue / Branch**: `#14` (`ci/issue-14-multiarch-ci-bilingual-docs-v1`)
+- **Request**: Author multi-OS GitHub Actions CI and 9-target release workflows (`.github/workflows/ci.yml`, `.github/workflows/release.yml`), synchronize the complete bilingual EN/FR documentation suite (`README.md`, `README.fr.md`, `CHANGELOG.md`, `docs/en/{SPECIFICATIONS,USER_GUIDE,COOKBOOK_EXAMPLES}.md`, `docs/fr/{SPECIFICATIONS,GUIDE_UTILISATEUR,EXEMPLES_RECETTES}.md`), verify 100% CI and governance checks, merge to `main`, and publish tagged GitHub Release `v1.0.0`.
+- **Changes**:
+  - [`.github/workflows/ci.yml`](../.github/workflows/ci.yml): Added 3-job CI workflow (`fmt-and-clippy`, `coverage-gate` enforcing `cargo llvm-cov --fail-under-lines 90` + LCOV upload, and `cross-os-test` across `ubuntu-latest`, `windows-latest`, and `macos-latest`).
+  - [`.github/workflows/release.yml`](../.github/workflows/release.yml): Added tag-triggered (`v*`) 9-target release matrix (`x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-gnu`, `aarch64-unknown-linux-musl`, `armv7-unknown-linux-gnueabihf` via `cargo-zigbuild`, plus native `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc`, `aarch64-apple-darwin`, and `x86_64-apple-darwin`) packaging binaries, `README.md`, `README.fr.md`, `LICENSE`, and `SHA256SUMS.txt` via `softprops/action-gh-release@v3`.
+  - Bilingual Root & Changelog: Created [`README.md`](../README.md), [`README.fr.md`](../README.fr.md), and [`CHANGELOG.md`](../CHANGELOG.md).
+  - Bilingual Guides & Specifications: Created [`docs/en/USER_GUIDE.md`](en/USER_GUIDE.md), [`docs/fr/GUIDE_UTILISATEUR.md`](fr/GUIDE_UTILISATEUR.md), [`docs/en/COOKBOOK_EXAMPLES.md`](en/COOKBOOK_EXAMPLES.md), and [`docs/fr/EXEMPLES_RECETTES.md`](fr/EXEMPLES_RECETTES.md); synchronized [`docs/en/SPECIFICATIONS.md`](en/SPECIFICATIONS.md) and [`docs/fr/SPECIFICATIONS.md`](fr/SPECIFICATIONS.md) (`std::fs::FileTimes` per `IMP-004` and exact 9 release targets).
+  - Governance: Updated [`docs/ACTION_LOGBOOK.md`](ACTION_LOGBOOK.md).
+- **Result**:
+  - Local verification & `@verifier` audit: `cargo fmt --all -- --check` PASS, `cargo clippy --all-targets -- -D warnings` PASS (`0` warnings), `cargo test` PASS (`57` unit + `37` integration across 8 suites = `94 passed; 0 failed`), `cargo llvm-cov --all-targets --workspace --summary-only --fail-under-lines 90` PASS (`92.67%` line coverage across `8,075` lines), `0` LaTeX/Markdown integrity errors across all repository `.md` files.
+
 ### ACT-004 — Implement Sweep Engine Orchestrator, Daemon Mode, Full CLI Subcommands, and Governance Test Suite (`Issue #12`)
 - **Timestamp**: `2026-11-20T10:22:44Z`
 - **Issue / Branch**: `#12` (`feat/issue-12-engine-cli-daemon`)

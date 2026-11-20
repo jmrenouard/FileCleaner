@@ -69,10 +69,10 @@ FileCleaner v1.0.0 proscrit toute dépendance C/C++ `-sys` (`openssl-sys`, `libz
 
 - **CLI & Configuration** : `clap` (v4 derive), `serde`, `serde_json`, `toml`, `serde_yaml_ng`, `thiserror`, `chrono` (avec `serde`)
 - **Parcours & Correspondance** : `walkdir`, `globset`, `regex`
-- **Compression & Intégrité** : `flate2` (moteur pure-Rust `miniz_oxide` par défaut), `lz4_flex`, `brotli`, `zip` (`default-features = false`, `deflate` pure-Rust), `sha2`, `filetime`
+- **Compression & Intégrité** : `flate2` (moteur pure-Rust `miniz_oxide` par défaut), `lz4_flex`, `brotli`, `zip` (`default-features = false`, `deflate` pure-Rust), `sha2`, ainsi que la bibliothèque standard Rust `std::fs::FileTimes` (`File::set_times`)
 - **Démon & Intégration OS** : `notify`, `ctrlc`, ainsi que `#[cfg(unix)] libc` et l'API standard Windows `OpenOptionsExt::share_mode(0)`.
 
-Cette pile compile proprement sur l'ensemble des 9 cibles de distribution : `x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-gnu`, `aarch64-unknown-linux-musl`, `x86_64-apple-darwin`, `aarch64-apple-darwin`, `x86_64-pc-windows-msvc`, `x86_64-pc-windows-gnu` et `aarch64-pc-windows-msvc`.
+Cette pile compile proprement sur l'ensemble des 9 cibles de distribution : `x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-gnu`, `aarch64-unknown-linux-musl`, `armv7-unknown-linux-gnueabihf`, `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc`, `aarch64-apple-darwin` et `x86_64-apple-darwin`.
 
 ---
 
@@ -683,7 +683,7 @@ Pour chaque candidat $f \in E$ validé par les garde-fous et le hook, FileCleane
 
 1. Formater l'horodatage résolu $t(f)$ selon le motif `strftime` `rule.rename_template` (défaut `%Y%m%d_%H%M%S`), produisant `<stem>_<horodatage><ext>` dans le même répertoire.
 2. **Gestion des collisions** : Ne jamais écraser silencieusement une cible existante ; échouer proprement (`FileCleanerError::Io`) ou désambiguïser par suffixe numérique déterministe si activé sans écrasement silencieux.
-3. Préserver le `mtime` d'origine (`filetime::set_file_mtime`) et mettre à jour `WorkingTarget`.
+3. Préserver le `mtime` d'origine (`std::fs::FileTimes` via `File::set_times`) et mettre à jour `WorkingTarget`.
 
 #### 7.2.2 `Compress` (`compression`, `compression_level`, `compress_remove_source`, `compress_overwrite`)
 
@@ -701,7 +701,7 @@ Séquence atomique d'exécution :
 1. Vérifier que `<path><suffix>` n'existe pas déjà (sauf `rule.compress_overwrite == true`).
 2. Compresser en flux vers le fichier temporaire `<dest>.fc-tmp`.
 3. Finaliser l'encodeur et appeler `sync_all()`.
-4. Restaurer `atime`/`mtime` d'origine via `filetime::set_file_times` sur `<dest>.fc-tmp`.
+4. Restaurer `atime`/`mtime` d'origine via `std::fs::FileTimes` (`File::set_times`) sur `<dest>.fc-tmp`.
 5. Renommer atomiquement `<dest>.fc-tmp` $\rightarrow$ `<dest>`.
 6. Seulement après réussite de l'étape 5, si `rule.compress_remove_source == true`, supprimer le fichier source et pointer `WorkingTarget` sur `<dest>`. En cas d'échec avant l'étape 5, supprimer `<dest>.fc-tmp` et préserver la source intacte.
 
@@ -715,7 +715,7 @@ Séquence atomique d'exécution :
    - Vider les tampons et appeler `sync_all()` sur `<dest>.fc-tmp`.
    - Rouvrir `<dest>.fc-tmp` depuis le disque pour recalculer indépendamment l'empreinte de vérification `Sha256` $H_{\text{verify}}$ et la taille $L_{\text{verify}}$.
    - Exiger $H_{\text{src}} = H_{\text{verify}} \land L_{\text{src}} = L_{\text{verify}}$. En cas de divergence, effacer `<dest>.fc-tmp`, préserver `src` intact et renvoyer `FileCleanerError::IntegrityMismatch`.
-   - Restaurer `atime`/`mtime` (`filetime::set_file_times`) et permissions Unix sur `<dest>.fc-tmp`.
+   - Restaurer `atime`/`mtime` (`std::fs::FileTimes` via `File::set_times`) et permissions Unix sur `<dest>.fc-tmp`.
    - Renommer atomiquement `<dest>.fc-tmp` $\rightarrow$ `<dest>`.
    - Supprimer enfin `src` et consigner l'empreinte `sha256` dans le journal d'audit JSONL.
 
@@ -820,15 +820,15 @@ Options globales acceptées avant les sous-commandes : `-c, --config <PATH>`, `-
 
 | Sous-commande | Rôle et options principales | Mutation autorisée |
 | :--- | :--- | :--- |
-| `filecleaner run` | Exécute une passe synchrone unique. Options : `--rule <NAME>...`, `--dry-run`, `--fail-on-freeze`, `--strict-constraints`, `--json`. | Réelle (sauf `--dry-run`) |
-| `filecleaner plan` | Plan d'exécution strictement en lecture seule (force `dry_run = true`). Options : `--rule <NAME>...`, `--fail-on-freeze`, `--strict-constraints`, `--json`. | **Jamais** |
-| `filecleaner check-in-use <PATH>` | Exécute la matrice multi-sondes sur un fichier unique. Options : `--idle-age <DUR>`, `--stability <DUR>`, `--sidecar-ext <EXT>...`, `--no-flock`, `--no-proc-fd`, `--no-windows-share`, `--json`. | **Jamais** |
-| `filecleaner validate` | Analyse la configuration, les unités, les regex/globs et tous les invariants `INV-CFG-*`. Options : `--json`. | **Jamais** |
-| `filecleaner init` | Génère un modèle annoté (`--output <PATH>`, `--format toml\|yaml`, `--force`) avec réglages sûrs (`dry_run = true`, `min_keep_files = 3`). | Crée uniquement le fichier config |
-| `filecleaner daemon run` | Lance le démon au premier plan (`--mode interval\|notify\|hybrid`, `--max-sweeps <N>`, `--dry-run`). | Selon mode de passe |
-| `filecleaner daemon status` | Consulte la vivacité du `pid_file` et les métriques de `state_file` (`--json`). | **Jamais** |
-| `filecleaner daemon stop` | Crée `stop_file` (et envoie `SIGTERM` sous Unix), attend la fin du PID jusqu'à `--timeout <DUR>`. | Écrit/nettoie `stop_file` |
-| `filecleaner daemon service-template` | Génère un modèle de service OS prêt à l'emploi (`--init-system systemd\|launchd\|windows-task`, `--config <PATH>`, `--user`). | Sortie standard / `--output` uniquement |
+| `filecleaner run` (alias `clean`) | Exécute une passe synchrone via `--config` ou en mode ad-hoc `--dir`. Options : `--rule <NAME>...`, `--dry-run`, `--fail-on-freeze`, `--strict-constraints`, `--dir <DIR>`, `--include <GLOB>...`, `--exclude <GLOB>...`, `--recursive`, `--max-files <N>`, `--max-age <DUR>`, `--max-size <BYTES>`, `--min-keep <N>`, `--min-valid-backup-bytes <BYTES>`, `--require-newer-within <DUR>`, `--freeze-before-date <TS>`, `--min-idle-age <DUR>`, `--rename-by-date`, `--rename-template <FMT>`, `--compress <CODEC>`, `--move-to <DIR>`, `--trash-dir <DIR>`, `--pre-hook <CMD>`, `--json`. | Réelle (sauf `--dry-run`) |
+| `filecleaner plan` | Plan d'exécution strictement en lecture seule (force `dry_run = true`). Prend en charge les mêmes options config et ad-hoc que `run`. | **Jamais** |
+| `filecleaner check-in-use <PATH...>` | Exécute la matrice multi-sondes sur un ou plusieurs fichiers. Options : `--idle-age <DUR>`, `--stability <DUR>`, `--sidecar-ext <EXT>...`, `--no-flock`, `--no-proc-fd`, `--no-windows-share`, `--json`. | **Jamais** |
+| `filecleaner validate [PATH]` | Analyse la configuration (positionnel `<PATH>` ou `-c/--config <PATH>`), les unités, les regex/globs et tous les invariants `INV-CFG-*`. Options : `--json`. | **Jamais** |
+| `filecleaner init` | Génère un modèle annoté (`-o/--output <PATH>`, `--profile backups\|logs\|spool`, `--format toml\|yaml`, `--force`) avec réglages sûrs (`dry_run = true`, `min_keep_files = 3`). | Crée uniquement le fichier config |
+| `filecleaner daemon run` | Lance le démon au premier plan (`--mode interval\|notify\|hybrid`, `--max-sweeps <N>`, `--fail-on-freeze`, `--strict-constraints`, `--dry-run`). | Selon mode de passe |
+| `filecleaner daemon status` | Consulte la vivacité du `pid_file` et les métriques de `state_file` (`--pid-file <PATH>`, `--state-file <PATH>`, `--json`). | **Jamais** |
+| `filecleaner daemon stop` | Crée `stop_file` (et envoie `SIGTERM` sous Unix), attend la fin du PID jusqu'à `--timeout <DUR>` (`10s` par défaut, `--pid-file <PATH>`, `--stop-file <PATH>`). | Écrit/nettoie `stop_file` |
+| `filecleaner daemon service-template` | Génère un modèle de service OS prêt à l'emploi (`--init-system systemd\|launchd\|windows-task` [alias `--target`], `-c/--config <PATH>`, `--user <USER>`, `-o/--output <PATH>`). | Sortie standard / `--output` uniquement |
 
 ### 9.2 Codes de sortie déterministes
 
