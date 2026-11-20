@@ -11,7 +11,17 @@
 
 ## 1. Errors & Bugs Encountered (Root Cause Analysis — `RCA`)
 
-*(No runtime or CI regressions encountered yet in Wave 1 bootstrap.)*
+### RCA-001 — WSL2 `/tmp` `tmpfs` Exhaustion (`ENOSPC`) Under Concurrent `CARGO_TARGET_DIR` Build Caches
+- **Date / Linked Action**: `2026-11-20` (`ACT-004` / Issue `#12`)
+- **Observed Symptom**:
+  - During Wave 3 `cargo test` compilation inside WSL2 Ubuntu-24.04, Rust build and `TempDir` creation failed with `No space left on device (os error 28)` (`ENOSPC`) while `/tmp` `tmpfs` reached `7.7G / 7.7G` (`100%` full).
+- **Root Cause Analysis (5 Whys)**:
+  1. *Why did `/tmp` run out of disk space?* Because cumulative Cargo build and LLVM coverage target caches from Wave 1 and Wave 2 workers (`/tmp/filecleaner-target`, `/tmp/filecleaner-target-core`, `/tmp/filecleaner-target-actions`) consumed `5.0G` inside the `7.7G` RAM-backed `/tmp` `tmpfs`.
+  2. *Why were multiple large target caches kept in `/tmp`?* Because isolated worktree builds defaulted to `/tmp/filecleaner-target-*` without pruning stale worker caches or using persistent Linux storage (`/var/tmp`, `769G` free).
+- **Applied Change / Fix**:
+  - Cleared stale `/tmp/filecleaner-target*` caches from `/tmp` to restore healthy `TempDir` execution and standardized Wave 3+ WSL2 builds and coverage runs on `CARGO_TARGET_DIR="/var/tmp/filecleaner-target-*"` (strictly outside Dropbox and off RAM-limited `/tmp`).
+- **Result & Non-Regression Test**:
+  - Full `cargo test` (`94/94` passing) and `cargo llvm-cov` (`92.67%`–`92.68%` coverage) completed with zero `ENOSPC` errors.
 
 ---
 
@@ -41,6 +51,15 @@
   - Spawning swarm workers with `workspace:"share"` on Windows inside a Dropbox-synced folder risks exposing an `Unknown` or unlinked VCS state to workers without deterministic branch provenance, complicates Windows/WSL2 path mapping, and breaks clean `git -C` integration from the root controller.
 - **Adopted Decision**:
   - Explicitly excluded `/.worktrees/` in `.git/info/exclude` (and `.gitignore`) and provisioned dedicated `git worktree` directories (`.worktrees/core`, `.worktrees/actions`, `.worktrees/docs`, `.worktrees/daemon`) anchored directly to `main`, giving each author an isolated branch and filesystem checkout while `@devops` owns all `git`/`gh` staging, merging, and worktree cleanup from Windows PowerShell.
+
+---
+
+### IMP-004 — Retaining Deprecated `filetime = "0.2"` Crate Alongside `[lints.cargo] unused_dependencies = "allow"`
+- **Context**: Removing Wave 1 manifest lint suppressions in [`Cargo.toml`](../Cargo.toml) during Wave 3 integration (`ACT-004` / Issue `#12`).
+- **Why It Is a Dead-End**:
+  - `src/actions.rs` preserves timestamps using Rust standard library `std::fs::File::set_times` (`std::fs::FileTimes`, stable since Rust `1.75`) instead of `filetime::set_file_times` (which is deprecated in `filetime 0.2.30`). Keeping `filetime = "0.2"` in `Cargo.toml` triggered `cargo::unused_dependencies` warnings once `[lints.cargo]` was removed.
+- **Adopted Decision**:
+  - Removed `filetime = "0.2"` from [`Cargo.toml`](../Cargo.toml) (and [`Cargo.lock`](../Cargo.lock)) and removed `[lints.cargo] unused_dependencies = "allow"`, leaving zero unused dependencies and zero compiler/manifest warnings.
 
 ---
 

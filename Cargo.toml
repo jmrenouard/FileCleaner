@@ -23,9 +23,8 @@ lz4_flex = "0.11"
 brotli = "7"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 sha2 = "0.10"
-filetime = "0.2"
 notify = "8"
-ctrlc = "3"
+ctrlc = { version = "3", features = ["termination"] }
 thiserror = "2"
 
 [target.'cfg(unix)'.dependencies]
@@ -35,8 +34,3 @@ libc = "0.2"
 tempfile = "3"
 assert_cmd = "2"
 predicates = "3"
-
-# Wave 1 scaffold declares the full v1.0.0 pure-Rust dependency contract upfront;
-# remove once Wave 2+ modules wire all compression, hashing, audit, and daemon crates.
-[lints.cargo]
-unused_dependencies = "allow"

@@ -17,6 +17,26 @@
 
 ## 2. Completed Actions (`COMPLETED`)
 
+### ACT-004 — Implement Sweep Engine Orchestrator, Daemon Mode, Full CLI Subcommands, and Governance Test Suite (`Issue #12`)
+- **Timestamp**: `2026-11-20T10:22:44Z`
+- **Issue / Branch**: `#12` (`feat/issue-12-engine-cli-daemon`)
+- **Request**: Implement the Wave 3 sweep engine orchestrator (`src/engine.rs`), cross-platform daemon runner (`src/daemon.rs`), full `clap` v4 CLI (`src/cli.rs`, `src/main.rs`), end-to-end CLI/daemon tests (`tests/daemon_and_cli_test.rs`), and automated governance/LaTeX math integrity tests (`tests/governance_and_docs_test.rs`), removing `[lints.cargo]` unused-dependency suppressions from `Cargo.toml`.
+- **Changes**:
+  - [`Cargo.toml`](../Cargo.toml) & [`Cargo.lock`](../Cargo.lock): Removed `[lints.cargo] unused_dependencies = "allow"`, removed deprecated `filetime = "0.2"` (replaced by `std::fs::FileTimes` in `src/actions.rs`, logged as `IMP-004`), and enabled `ctrlc` `termination` feature.
+  - [`src/engine.rs`](../src/engine.rs): Added `SweepEngine::run_config` / `run_live` executing the strict 6-phase pipeline (`Scan -> InUseProbe -> BackupGuard -> RetentionEval -> PreHook -> Execute`), emitting all 8 `AuditEventKind` events, enforcing dry-run/`plan` parity, mid-sweep shutdown safety, and deterministic exit codes (`0`, `1`, `3`).
+  - [`src/daemon.rs`](../src/daemon.rs): Added `DaemonRunner` supporting `Interval`/`Notify`/`Hybrid` (`notify::RecommendedWatcher` + debounce), `sweep_on_start`, atomic `.fc-tmp` `pid_file` (live PID -> exit `4`) & live JSON `state_file` (`version: "1.0.0"`), `ctrlc` (`SIGINT`/`SIGTERM`) + cooperative `stop_file` shutdown, `--max-sweeps`, `daemon_status`, `daemon_stop`, and `generate_service_template` (`systemd`, `launchd`, `windows-task`).
+  - [`src/cli.rs`](../src/cli.rs) & [`src/main.rs`](../src/main.rs): Implemented full `clap` v4 CLI (`--config`, `--dry-run`, `--json`, `-v`, `-q`, `--audit-log`; `run`/`clean`, `plan`, `check-in-use`, `validate`, `init`, `daemon {run, status, stop, service-template}`) with documented exit codes (`0`, `1`, `2`, `3`, `4`, `10`).
+  - [`src/lib.rs`](../src/lib.rs): Exported `cli`, `daemon`, and `engine` modules alongside Wave 1/2 modules.
+  - Integration Tests: [`tests/daemon_and_cli_test.rs`](../tests/daemon_and_cli_test.rs) (`6` E2E tests) and [`tests/governance_and_docs_test.rs`](../tests/governance_and_docs_test.rs) (`3` governance/SVG/PNG/LaTeX syntax integrity tests).
+  - Governance Registers: Updated [`docs/ACTION_LOGBOOK.md`](ACTION_LOGBOOK.md) and [`docs/RCA_REGISTER.md`](RCA_REGISTER.md) (`RCA-001`, `IMP-004`).
+- **Result**:
+  - `cargo fmt --all -- --check`: PASS (`0` diffs).
+  - `cargo clippy --all-targets -- -D warnings`: PASS (`0` warnings).
+  - `cargo test`: PASS (`57` unit tests + `37` integration tests across 8 suites = `94 passed; 0 failed`).
+  - `cargo llvm-cov --all-targets --workspace --summary-only --fail-under-lines 90`: PASS (`92.67%`–`92.68%` line coverage across `8,075` lines: `actions.rs` `88.80%`, `audit.rs` `95.73%`, `cli.rs` `91.87%`, `config.rs` `94.69%`, `daemon.rs` `92.53%`, `engine.rs` `97.39%`, `error.rs` `100.00%`, `hooks.rs` `94.22%`, `in_use.rs` `87.56%`, `main.rs` `100.00%`, `policy.rs` `92.99%`, `scanner.rs` `90.79%`).
+  - Independent Audit: Approved by `@verifier` (`94/94` passed, `92.67%` line coverage).
+  - GitHub Tracking: Issue `#12` / PR `#13` (`feat/issue-12-engine-cli-daemon`).
+
 ### ACT-003 — Implement Lifecycle Action Pipeline, Pure-Rust Compression, Pre-Delete Hooks, and JSONL Audit Log (`Issue #8`)
 - **Timestamp**: `2026-11-20T10:03:39Z`
 - **Issue / Branch**: `#8` (`feat/issue-8-actions-compression-hooks`)
