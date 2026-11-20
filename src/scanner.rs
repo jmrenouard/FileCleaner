@@ -1164,31 +1164,27 @@ mod tests {
             Err(FileCleanerError::Io { .. })
         ));
 
-        let f_top = root.join("evt_2026-11-20T09:00:00+00:00.log");
-        let f_sub_small = sub.join("evt_2026-11-19T09:00:00+00:00.log");
-        let f_sub_ok = sub.join("evt_2026-11-18T09:00:00+00:00.log");
-        let f_deep = deep.join("evt_2026-11-17T09:00:00+00:00.log");
+        let f_top = root.join("evt_2026-11-20T090000+0000.log");
+        let f_sub_small = sub.join("evt_2026-11-19T090000+0000.log");
+        let f_sub_ok = sub.join("evt_2026-11-18T090000+0000.log");
+        let f_deep = deep.join("evt_2026-11-17T090000+0000.log");
         fs::write(&f_top, b"12345").unwrap();
         fs::write(&f_sub_small, b"1").unwrap();
         fs::write(&f_sub_ok, b"1234").unwrap();
         fs::write(&f_deep, b"12345").unwrap();
 
-        let mut rule = base_rule("depth-size-rfc", root);
+        let mut rule = base_rule("depth-size-tz", root);
         rule.recursive = true;
         rule.max_depth = Some(2);
         rule.min_file_size = Some(2);
         rule.max_file_size = Some(4);
         rule.time_basis = TimeBasis::FilenameDate;
-        rule.filename_date_regex =
-            Some(r"evt_(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+\-]\d{2}:\d{2})".to_string());
-        rule.filename_date_format = Some("%Y-%m-%dT%H:%M:%S%:z".to_string());
+        rule.filename_date_regex = Some(r"evt_(\d{4}-\d{2}-\d{2}T\d{6}[+\-]\d{4})".to_string());
+        rule.filename_date_format = Some("%Y-%m-%dT%H%M%S%z".to_string());
 
         let rep = Scanner::scan_rule(&rule, None, &DaemonConfig::default()).unwrap();
         assert_eq!(rep.files.len(), 1);
-        assert_eq!(
-            rep.files[0].rel_path,
-            "sub/evt_2026-11-18T09:00:00+00:00.log"
-        );
+        assert_eq!(rep.files[0].rel_path, "sub/evt_2026-11-18T090000+0000.log");
 
         // Pre-1970 UNIX_EPOCH conversion handles both exact-second and subsecond timestamps.
         let p = Path::new("ancient");

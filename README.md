@@ -295,7 +295,7 @@ FileCleaner depends exclusively on pure-Rust crates (`miniz_oxide`, `lz4_flex`, 
 
 ## Contributing & Engineering Governance
 
-All FileCleaner changes follow strict engineering traceability and verified quality gates (Issue `#20` / branch `feat/issue-20-audit-tests-simple-howto` baseline: `cargo fmt --all -- --check` clean, `cargo clippy --all-targets -- -D warnings` **`0` warnings** across Linux/Windows/macOS targets, **`124` tests passed** [`64` unit + `60` integration across `9` suites], and **`94.31%` line coverage** / **`92.45%` region coverage** across `9,100` lines via `cargo llvm-cov --fail-under-lines 90` with every `src/*.rs` module `>= 90.21%`):
+All FileCleaner changes follow strict engineering traceability and verified quality gates (Issue `#20` / branch `feat/issue-20-audit-tests-simple-howto` baseline: `cargo fmt --all -- --check` clean, `cargo clippy --all-targets -- -D warnings` **`0` warnings** across Linux/Windows/macOS targets, **`124` tests passed** [`64` unit + `60` integration across `9` suites], and **`94.31%` line coverage** / **`92.45%` region coverage** across `9,098` lines via `cargo llvm-cov --fail-under-lines 90` with every `src/*.rs` module `>= 90.21%`):
 
 - [**`docs/ACTION_LOGBOOK.md`**](docs/ACTION_LOGBOOK.md) — Chronological engineering action logbook with verified test & coverage evidence.
 - [**`docs/RCA_REGISTER.md`**](docs/RCA_REGISTER.md) — Root cause analyses (`RCA`), rejected technical dead-ends (`IMP`), platform approximations (`APP`), and `v1.1` roadmap (`IDEA`).

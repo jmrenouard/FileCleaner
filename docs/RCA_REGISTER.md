@@ -140,7 +140,22 @@
 - **Applied Change / Fix**:
   - Updated `src/hooks.rs` (`Arc<Mutex<Vec<u8>>>` bounded capture up to `64 KiB` at UTF-8 char boundaries + `STDERR_DRAIN_GRACE`), `src/config.rs` (eager `rename_template` validation), `src/cli.rs` (`rename_by_date || rename_template.is_some()`), `src/daemon.rs` (`is_live_filecleaner_pid`), `src/scanner.rs` (lean regex reuse), fixed Cookbook JSON examples, published EN/FR `HOWTO.md`, and enforced doc config validation in `tests/governance_and_docs_test.rs`.
 - **Result & Non-Regression Test**:
-  - Verified in WSL2 (`CARGO_TARGET_DIR=/var/tmp/filecleaner-target-plan`): `cargo fmt --all` PASS, 3-target `cargo clippy --all-targets -- -D warnings` PASS (`0` warnings), `cargo test --all-targets` PASS (`124/124` tests across `src/lib.rs` and `9` integration suites including `tests/product_workflows_e2e_test.rs`), and `cargo llvm-cov --fail-under-lines 90` PASS (`94.31%` line coverage across `9,100` lines; `actions.rs` lifted to `90.21%`, all modules `>= 90.21%`).
+  - Verified in WSL2 (`CARGO_TARGET_DIR=/var/tmp/filecleaner-target-plan`): `cargo fmt --all` PASS, 3-target `cargo clippy --all-targets -- -D warnings` PASS (`0` warnings), `cargo test --all-targets` PASS (`124/124` tests across `src/lib.rs` and `9` integration suites including `tests/product_workflows_e2e_test.rs`), and `cargo llvm-cov --fail-under-lines 90` PASS (`94.31%` line coverage across `9,098` lines; `actions.rs` lifted to `90.21%`, all modules `>= 90.21%`).
+
+### RCA-008 — Windows CI Test Failures (`share_mode(0)` Open Write Handle, NTFS `:` Filename Character, and Top-Level TOML Array) (`Issue #20` / `PR #21`)
+
+- **Observed Symptom**:
+  - `Cross-OS Test Suite (windows-latest)` failed in `src/lib.rs` on `cli::tests::execute_cli_covers_validate_check_in_use_init_sweep_and_daemon_branches` (destination `app_20231114.log` missing because file remained protected as busy) and `scanner::tests::scanner_rejects_non_directory_root_and_applies_max_depth_size_bounds_and_rfc3339_dates` (`InvalidFilename` / Win32 error `123`).
+- **Root Cause Analysis (5 Whys)**:
+  1. `src/cli.rs` kept `f_handle` (`OpenOptions::new().write(true)`) open when invoking `execute_cli(...)`; Unix permissive descriptors allowed rename anyway, whereas FileCleaner's own Windows `share_mode(0)` probe properly detected the open write handle and blocked eviction.
+  2. `src/scanner.rs` wrote sample test filenames containing `:` (`09:00:00+00:00`), which are illegal on Windows NTFS.
+  3. Inspection also revealed `tests/product_workflows_e2e_test.rs` serialized `Vec<String>` PowerShell hook arguments via `toml::to_string(&hook_args).unwrap_or_else(|_| "[]")`, which silently fell back to `"[]"` because top-level TOML serialization requires a table.
+- **Applied Change / Fix**:
+  - Explicitly `drop(f_handle);` in `src/cli.rs` before running `execute_cli(...)`.
+  - Replaced colon timestamps in disk test filenames inside `src/scanner.rs` with Windows-safe ISO-8601 basic timezone notation (`%Y-%m-%dT%H%M%S%z`, `evt_2026-11-18T090000+0000.log`).
+  - Serialized `hook_args` with `serde_json::to_string(&hook_args)` inside `tests/product_workflows_e2e_test.rs` so backslash-escaped TOML string arrays preserve Windows PowerShell arguments intact.
+- **Result & Non-Regression Test**:
+  - Re-verified in WSL2 (`fmt`, 3-target `clippy -D warnings`, `cargo test --all-targets` `124/124`, `cargo llvm-cov --fail-under-lines 90` `94.31%` across `9,098` lines) and pushed commit to trigger full Windows/macOS/Linux GitHub Actions re-run on `PR #21`.
 
 ---
 

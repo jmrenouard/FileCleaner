@@ -1956,6 +1956,7 @@ copy_truncate_to = "{}"
         f_handle
             .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000))
             .unwrap();
+        drop(f_handle);
         assert_eq!(
             execute_cli(Cli {
                 config: None,

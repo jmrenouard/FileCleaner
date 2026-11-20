@@ -342,7 +342,7 @@ fn howto_workflow_4_incoming_spool_check_in_use_and_hook_veto_to_trash() {
     };
 
     let cfg_path = tmp.path().join("spool.toml");
-    let args_toml = toml::to_string(&hook_args).unwrap_or_else(|_| "[]".to_string());
+    let args_toml = serde_json::to_string(&hook_args).unwrap();
     let hook_cmd_esc = toml_path(Path::new(&hook_cmd));
 
     fs::write(

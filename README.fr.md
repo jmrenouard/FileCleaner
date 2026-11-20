@@ -295,7 +295,7 @@ FileCleaner repose exclusivement sur des crates 100 % Rust (`miniz_oxide`, `lz4_
 
 ## Contribution et gouvernance technique
 
-Toute modification sur FileCleaner respecte une traçabilité rigoureuse et des seuils de qualité vérifiés (référence Issue `#20` / branche `feat/issue-20-audit-tests-simple-howto` : `cargo fmt --all -- --check` conforme, `cargo clippy --all-targets -- -D warnings` **`0` alerte** sur Linux/Windows/macOS, **`124` tests réussis** [`64` unitaires + `60` d'intégration sur `9` suites], et **`94.31%` de couverture de lignes** / **`92.45%` de régions** sur `9 100` lignes via `cargo llvm-cov --fail-under-lines 90` avec chaque module `src/*.rs >= 90.21%`) :
+Toute modification sur FileCleaner respecte une traçabilité rigoureuse et des seuils de qualité vérifiés (référence Issue `#20` / branche `feat/issue-20-audit-tests-simple-howto` : `cargo fmt --all -- --check` conforme, `cargo clippy --all-targets -- -D warnings` **`0` alerte** sur Linux/Windows/macOS, **`124` tests réussis** [`64` unitaires + `60` d'intégration sur `9` suites], et **`94.31%` de couverture de lignes** / **`92.45%` de régions** sur `9 098` lignes via `cargo llvm-cov --fail-under-lines 90` avec chaque module `src/*.rs >= 90.21%`) :
 
 - [**`docs/ACTION_LOGBOOK.md`**](docs/ACTION_LOGBOOK.md) — Journal chronologique des actions et métriques de validation.
 - [**`docs/RCA_REGISTER.md`**](docs/RCA_REGISTER.md) — Analyses de causes racines (`RCA`), impasses écartées (`IMP`), approximations plateforme (`APP`) et feuille de route `v1.1` (`IDEA`).
