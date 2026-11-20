@@ -3,8 +3,8 @@
 use chrono::{TimeZone, Utc};
 use filecleaner::{
     ActionStep, BackupGuardConfig, CombineMode, CompressionFormat, DaemonConfig, DecisionKind,
-    EvictionOrder, FileCleanerError, FixedClock, InUseBatchResult, InUseConfig, RetentionEngine,
-    RuleConfig, RuleOutcome, Scanner, TimeBasis,
+    EvictionOrder, FixedClock, InUseBatchResult, InUseConfig, RetentionEngine, RuleConfig,
+    RuleOutcome, Scanner, TimeBasis,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -282,6 +282,7 @@ fn scanner_filename_date_fail_closed_never_evicts_unparseable_files() {
 #[cfg(unix)]
 #[test]
 fn scanner_skips_symlinks_by_default_and_detects_loops_when_enabled() {
+    use filecleaner::FileCleanerError;
     use std::os::unix::fs::symlink;
 
     let tmp = TempDir::new().unwrap();

@@ -25,6 +25,30 @@
 
 ---
 
+### RCA-002 — Cross-OS GitHub Actions CI Failures & Warnings on `windows-latest` and `macos-latest` (`PR #15` / Run `44712069431`)
+- **Date / Linked Action**: `2026-11-20` (`ACT-005` / Issue `#14` / PR `#15`)
+- **Observed Symptom**:
+  - While `ubuntu-latest` passed `fmt-and-clippy`, `coverage-gate >= 90%`, and `cross-os-test` (`94/94`), GitHub Actions CI Run `44712069431` failed on `windows-latest` and `macos-latest` with:
+    1. `src/in_use.rs:956`: `assertion failed: direct_missing.fatal_error.is_some()` on both Windows and macOS.
+    2. `src/scanner.rs:909`: `assertion left != right failed` (`resolved_ts == modified_ts`) on `macos-latest`.
+    3. `src/scanner.rs:982`: `overflow when adding duration to SystemTime` panic on `windows-latest`.
+    4. Windows compiler warnings (`src/daemon.rs:514-515` unused `mut signal_sent` and `target_pid`; `tests/hooks_pre_delete_test.rs` unused imports/helpers; `tests/retention_age_size_count_test.rs:6` unused `FileCleanerError`) under `#[cfg(unix)]`-gated test/signal paths.
+- **Root Cause Analysis (5 Whys)**:
+  1. *Why did `src/in_use.rs:956` fail on Windows/macOS?* Because `OsLockProbe::check_proc_fd_batch` only scans `/proc/*/fd` on `#[cfg(target_os = "linux")]` and returns an empty `ProcFdProbeOutcome` on non-Linux platforms, yet the test unconditionally asserted `fatal_error.is_some()`.
+  2. *Why did `src/scanner.rs:909` fail on macOS APFS?* Because APFS clamps `st_birthtime` backward to `mtime` whenever `mtime` is explicitly set older than `birthtime` (`1_500_000_000` in 2017 vs. 2026 creation time), making `created_ts == modified_ts`.
+  3. *Why did `src/scanner.rs:982` panic on Windows?* Because Windows `SystemTime` (`FILETIME`) caps out around year 30828 AD, so unchecked `UNIX_EPOCH + Duration::from_secs(u64::MAX / 2)` overflows inside `SystemTime::add`.
+  4. *Why were Windows-specific warnings and handle-lifetime subtleties missed before pushing?* Because local verification ran exclusively on WSL2 Linux (`ubuntu-latest`) and `cross-os-test` in `.github/workflows/ci.yml` ran `cargo test --all-targets` without `cargo clippy --all-targets -- -D warnings`.
+- **Applied Change / Fix**:
+  - [`src/in_use.rs`](../src/in_use.rs): Gated `direct_missing.fatal_error.is_some()` with `#[cfg(target_os = "linux")]` and asserted empty/non-fatal outcome under `#[cfg(not(target_os = "linux"))]`.
+  - [`src/scanner.rs`](../src/scanner.rs): Updated `scan_rule_time_basis_created_succeeds_or_fails_without_fallback` to advance `mtime` into the future (`>= 1_900_000_000`) so APFS/NTFS/ext4 preserve distinct `birthtime`, and switched overflow tests in `system_time_overflow_and_lexical_path_resolution_handle_edge_cases` to `checked_add` / `checked_sub`.
+  - [`src/daemon.rs`](../src/daemon.rs): Replaced `mut signal_sent` / `target_pid` in `daemon_stop` with clean `#[cfg(unix)]` / `#[cfg(not(unix))]` branches, added bounded Windows `PermissionDenied` retry on atomic state rename, scoped file-handle drops before daemon deletions, and enabled cross-OS stop-file shutdown coverage.
+  - Integration Tests ([`tests/hooks_pre_delete_test.rs`](../tests/hooks_pre_delete_test.rs), [`tests/retention_age_size_count_test.rs`](../tests/retention_age_size_count_test.rs), [`tests/in_use_detection_test.rs`](../tests/in_use_detection_test.rs), [`tests/daemon_and_cli_test.rs`](../tests/daemon_and_cli_test.rs)): Gated Unix-only imports/helpers cleanly, added cross-platform and `#[cfg(windows)]` hook (`powershell.exe` / `ping.exe`) and `share_mode(0)` lock tests, and removed Notify/mtime timing races.
+  - [`.github/workflows/ci.yml`](../.github/workflows/ci.yml): Added `components: clippy` and `cargo clippy --all-targets -- -D warnings` to `cross-os-test` across all 3 runner OSes.
+- **Result & Non-Regression Test**:
+  - Verified locally in WSL2 (`cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo llvm-cov --fail-under-lines 90`) and queued for multi-OS GitHub Actions re-verification across `ubuntu-latest`, `windows-latest`, and `macos-latest`.
+
+---
+
 ## 2. Technical Dead-Ends & Abandoned Leads (`IMP`)
 
 ### IMP-001 — C/C++ `-sys` Compression Bindings (`zstd-sys`, `liblz4-sys`, `bzip2-sys`, `zlib-ng-sys`) vs. Pure-Rust Compression Crates

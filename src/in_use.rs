@@ -951,8 +951,12 @@ mod tests {
         );
         assert!(res_huge.is_busy(&p_huge_idle));
 
-        // Direct OsLockProbe check_proc_fd on missing file fails closed.
+        // Direct OsLockProbe check_proc_fd on missing file fails closed on Linux and returns
+        // an empty outcome on platforms without `/proc/*/fd` inspection.
         let direct_missing = OsLockProbe.check_proc_fd(&tmp.path().join("nope.dat"));
+        #[cfg(target_os = "linux")]
         assert!(direct_missing.fatal_error.is_some());
+        #[cfg(not(target_os = "linux"))]
+        assert!(direct_missing.fatal_error.is_none() && direct_missing.open_pids.is_empty());
     }
 }

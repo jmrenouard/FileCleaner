@@ -11,8 +11,8 @@
 [![Release](https://img.shields.io/github/v/release/jmrenouard/FileCleaner?style=flat-square&logo=github&color=0ea5e9)](https://github.com/jmrenouard/FileCleaner/releases)
 [![CI](https://github.com/jmrenouard/FileCleaner/actions/workflows/ci.yml/badge.svg)](https://github.com/jmrenouard/FileCleaner/actions/workflows/ci.yml)
 [![Pure Rust](https://img.shields.io/badge/Rust-2021_Pure--Rust-10b981?style=flat-square&logo=rust)](Cargo.toml)
-[![Tests](https://img.shields.io/badge/Tests-94_Réussis-3b82f6?style=flat-square)](docs/ACTION_LOGBOOK.md)
-[![Couverture](https://img.shields.io/badge/Couverture-92.67%25_llvm--cov-10b981?style=flat-square)](docs/ACTION_LOGBOOK.md)
+[![Tests](https://img.shields.io/badge/Tests-95_Réussis-3b82f6?style=flat-square)](docs/ACTION_LOGBOOK.md)
+[![Couverture](https://img.shields.io/badge/Couverture-92.83%25_llvm--cov-10b981?style=flat-square)](docs/ACTION_LOGBOOK.md)
 [![Clippy](https://img.shields.io/badge/Clippy-0_Alerte-10b981?style=flat-square)](docs/ACTION_LOGBOOK.md)
 [![Cibles](https://img.shields.io/badge/Cibles-9_Binaires_Multiplateformes-0284c7?style=flat-square)](#matrice-de-compilation-croisée-9-cibles)
 [![Licence](https://img.shields.io/badge/Licence-Apache_2.0-f59e0b?style=flat-square)](LICENSE)
@@ -287,7 +287,7 @@ FileCleaner repose exclusivement sur des crates 100 % Rust (`miniz_oxide`, `lz4_
 
 ## Contribution et gouvernance technique
 
-Toute modification sur FileCleaner respecte une traçabilité rigoureuse et des seuils de qualité vérifiés (référence Issue `#12` / PR `#13` : `cargo fmt --all -- --check` conforme, `cargo clippy --all-targets -- -D warnings` **`0` alerte**, **`94` tests réussis** [`57` unitaires + `37` d'intégration sur `8` suites], et **`92.67%` de couverture de lignes** sur `8 075` lignes via `cargo llvm-cov --fail-under-lines 90`) :
+Toute modification sur FileCleaner respecte une traçabilité rigoureuse et des seuils de qualité vérifiés (référence Issue `#14` / PR `#15` : `cargo fmt --all -- --check` conforme, `cargo clippy --all-targets -- -D warnings` **`0` alerte**, **`95` tests réussis** [`57` unitaires + `38` d'intégration sur `8` suites], et **`92.83%` de couverture de lignes** sur `8 088` lignes via `cargo llvm-cov --fail-under-lines 90`) :
 
 - [**`docs/ACTION_LOGBOOK.md`**](docs/ACTION_LOGBOOK.md) — Journal chronologique des actions et métriques de validation.
 - [**`docs/RCA_REGISTER.md`**](docs/RCA_REGISTER.md) — Analyses de causes racines (`RCA`), impasses écartées (`IMP`), approximations plateforme (`APP`) et feuille de route `v1.1` (`IDEA`).
