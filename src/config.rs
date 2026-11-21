@@ -11,6 +11,8 @@ use std::time::Duration;
 
 /// Minimum S3 multipart upload part size (`5 MiB`), matching S3 protocol limits.
 pub const MIN_S3_MULTIPART_PART_SIZE: u64 = 5 * 1024 * 1024;
+/// Maximum S3 multipart upload part size (`5 GiB`), matching S3 protocol limits.
+pub const MAX_S3_MULTIPART_PART_SIZE: u64 = 5 * 1024 * 1024 * 1024;
 const DEFAULT_S3_MULTIPART_PART_SIZE: u64 = 16 * 1024 * 1024;
 
 /// Top-level FileCleaner configuration loaded from TOML or YAML.
@@ -866,22 +868,25 @@ impl Config {
 
 /// Validates S3 archival sink configuration invariants (`INV-CFG-11` and `INV-CFG-12`).
 fn validate_s3_config(scope: &str, s3: &S3Config) -> Result<()> {
-    let bucket = s3.bucket.trim();
+    let bucket = s3.bucket.as_str();
     if bucket.is_empty()
         || bucket.contains('/')
         || bucket.contains('\\')
         || bucket.contains("..")
-        || bucket.chars().any(char::is_whitespace)
+        || bucket.chars().any(|c| c.is_whitespace() || c.is_control())
     {
         return Err(FileCleanerError::ConfigValidation(format!(
-            "{scope} bucket must be a non-empty valid bucket name without slashes or whitespace"
+            "{scope} bucket must be a non-empty valid bucket name without slashes, whitespace, or control characters"
         )));
     }
 
-    let region = s3.region.trim();
-    if region.is_empty() || region.contains('/') || region.chars().any(char::is_whitespace) {
+    let region = s3.region.as_str();
+    if region.is_empty()
+        || region.contains('/')
+        || region.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
         return Err(FileCleanerError::ConfigValidation(format!(
-            "{scope} region must be non-empty without slashes or whitespace"
+            "{scope} region must be non-empty without slashes, whitespace, or control characters"
         )));
     }
 
@@ -891,8 +896,7 @@ fn validate_s3_config(scope: &str, s3: &S3Config) -> Result<()> {
         validate_env_var_name(scope, "session_token_env", token_env)?;
     }
 
-    if let Some(ep_raw) = &s3.endpoint {
-        let ep = ep_raw.trim();
+    if let Some(ep) = &s3.endpoint {
         let rest = if let Some(after) = ep.strip_prefix("https://") {
             after
         } else if let Some(after) = ep.strip_prefix("http://") {
@@ -909,17 +913,22 @@ fn validate_s3_config(scope: &str, s3: &S3Config) -> Result<()> {
         };
 
         let host = rest.split('/').next().unwrap_or("");
-        if host.is_empty() || ep.chars().any(char::is_whitespace) {
+        if host.is_empty()
+            || ep.contains('@')
+            || ep.contains('?')
+            || ep.contains('#')
+            || ep.chars().any(|c| c.is_whitespace() || c.is_control())
+        {
             return Err(FileCleanerError::ConfigValidation(format!(
-                "{scope} endpoint '{ep}' must include a valid host without whitespace"
+                "{scope} endpoint '{ep}' must include a valid host without embedded credentials, query/fragment, or whitespace"
             )));
         }
     }
 
     if let Some(prefix) = &s3.prefix {
-        if has_traversal_or_backslash(prefix) {
+        if has_traversal_or_backslash(prefix) || prefix.chars().any(char::is_control) {
             return Err(FileCleanerError::ConfigValidation(format!(
-                "{scope} prefix '{prefix}' must not contain '..' segments or backslashes"
+                "{scope} prefix '{prefix}' must not contain '..' segments, backslashes, or control characters"
             )));
         }
     }
@@ -927,6 +936,7 @@ fn validate_s3_config(scope: &str, s3: &S3Config) -> Result<()> {
     if let Some(date_subdir) = &s3.key_date_subdir {
         if date_subdir.trim().is_empty()
             || has_traversal_or_backslash(date_subdir)
+            || date_subdir.chars().any(char::is_control)
             || StrftimeItems::new(date_subdir).any(|item| matches!(item, Item::Error))
         {
             return Err(FileCleanerError::ConfigValidation(format!(
@@ -949,9 +959,11 @@ fn validate_s3_config(scope: &str, s3: &S3Config) -> Result<()> {
         )));
     }
 
-    if s3.multipart_part_size < MIN_S3_MULTIPART_PART_SIZE {
+    if s3.multipart_part_size < MIN_S3_MULTIPART_PART_SIZE
+        || s3.multipart_part_size > MAX_S3_MULTIPART_PART_SIZE
+    {
         return Err(FileCleanerError::ConfigValidation(format!(
-            "{scope} multipart_part_size ({}) must be at least {MIN_S3_MULTIPART_PART_SIZE} bytes (5 MiB)",
+            "{scope} multipart_part_size ({}) must be between {MIN_S3_MULTIPART_PART_SIZE} (5 MiB) and {MAX_S3_MULTIPART_PART_SIZE} (5 GiB)",
             s3.multipart_part_size
         )));
     }
@@ -960,14 +972,12 @@ fn validate_s3_config(scope: &str, s3: &S3Config) -> Result<()> {
 }
 
 fn validate_env_var_name(scope: &str, field: &str, raw: &str) -> Result<()> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty()
-        || trimmed.contains('=')
-        || trimmed.contains('\0')
-        || trimmed.chars().any(char::is_whitespace)
+    if raw.is_empty()
+        || raw.contains('=')
+        || raw.chars().any(|c| c.is_whitespace() || c.is_control())
     {
         return Err(FileCleanerError::ConfigValidation(format!(
-            "{scope} {field} must be a non-empty environment variable name"
+            "{scope} {field} must be a non-empty environment variable name without whitespace or '='"
         )));
     }
     Ok(())
@@ -2518,6 +2528,26 @@ rules:
             },
             S3Config {
                 multipart_part_size: MIN_S3_MULTIPART_PART_SIZE - 1,
+                ..valid_s3.clone()
+            },
+            S3Config {
+                multipart_part_size: MAX_S3_MULTIPART_PART_SIZE + 1,
+                ..valid_s3.clone()
+            },
+            S3Config {
+                bucket: " leading-space ".into(),
+                ..valid_s3.clone()
+            },
+            S3Config {
+                region: " us-east-1 ".into(),
+                ..valid_s3.clone()
+            },
+            S3Config {
+                access_key_env: " AWS_ACCESS_KEY_ID ".into(),
+                ..valid_s3.clone()
+            },
+            S3Config {
+                endpoint: Some("https://user:pass@minio.local:9000".into()),
                 ..valid_s3
             },
         ];
