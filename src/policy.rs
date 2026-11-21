@@ -582,6 +582,7 @@ mod tests {
             compress_overwrite: false,
             copy_truncate_to: None,
             rename_template: None,
+            s3: None,
         }
     }
 
@@ -756,5 +757,49 @@ mod tests {
         rule.backup_guard.min_keep_files = 1;
         rule.enabled = false;
         assert!(compute_protected_floor_paths(&rule, &files).is_empty());
+    }
+
+    #[test]
+    fn upload_s3_alone_is_non_destructive_and_reports_constrained_while_upload_s3_delete_reclaims()
+    {
+        let now = chrono::Utc
+            .with_ymd_and_hms(2026, 11, 20, 12, 0, 0)
+            .unwrap();
+        let scan = ScanReport {
+            files: vec![
+                file("a.sql", 100, 300, now),
+                file("b.sql", 100, 200, now),
+                file("c.sql", 100, 100, now),
+            ],
+            ..ScanReport::default()
+        };
+
+        let mut upload_only = base_rule("s3-only");
+        upload_only.max_files = Some(1);
+        upload_only.actions = vec![ActionStep::UploadS3];
+        let plan_only = RetentionEngine::plan(
+            &upload_only,
+            &scan,
+            &InUseBatchResult::default(),
+            &FixedClock(now),
+        );
+        assert_eq!(plan_only.outcome, RuleOutcome::Constrained);
+        assert_eq!(plan_only.remaining_files, 3);
+        assert_eq!(plan_only.remaining_bytes, 300);
+        assert_eq!(plan_only.evict_files.len(), 3);
+
+        let mut upload_delete = base_rule("s3-delete");
+        upload_delete.max_files = Some(1);
+        upload_delete.actions = vec![ActionStep::UploadS3, ActionStep::Delete];
+        let plan_del = RetentionEngine::plan(
+            &upload_delete,
+            &scan,
+            &InUseBatchResult::default(),
+            &FixedClock(now),
+        );
+        assert_eq!(plan_del.outcome, RuleOutcome::Ok);
+        assert_eq!(plan_del.remaining_files, 1);
+        assert_eq!(plan_del.remaining_bytes, 100);
+        assert_eq!(plan_del.evict_files.len(), 2);
     }
 }

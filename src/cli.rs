@@ -1039,6 +1039,7 @@ fn build_adhoc_config(args: &SweepArgs, dir: &Path) -> Result<Config> {
         compress_overwrite: false,
         copy_truncate_to: None,
         rename_template: args.rename_template.clone(),
+        s3: None,
     };
 
     let cfg = Config {
@@ -1047,6 +1048,7 @@ fn build_adhoc_config(args: &SweepArgs, dir: &Path) -> Result<Config> {
         daemon: DaemonConfig::default(),
         audit: AuditConfig::default(),
         global_trash_dir: None,
+        s3: None,
         rules: vec![rule],
     };
     cfg.validate()?;
@@ -1588,6 +1590,14 @@ mod tests {
             InitFormat::Yaml
         );
         assert_eq!(resolve_init_format(None, None), InitFormat::Toml);
+        assert_eq!(
+            error_exit_code(&FileCleanerError::S3Upload {
+                path: PathBuf::from("/tmp/a.sql"),
+                uri: "s3://bucket/a.sql".to_string(),
+                reason: "network error".to_string(),
+            }),
+            EXIT_OPERATIONAL_ERROR
+        );
     }
 
     #[test]

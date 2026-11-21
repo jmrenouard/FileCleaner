@@ -66,4 +66,56 @@ rename_template = "%Q"
         .assert()
         .code(2)
         .stderr(predicate::str::contains("rename_template"));
+
+    // Valid S3 TOML and YAML configs pass validation; insecure http:// without opt-in fails with exit 2.
+    let s3_toml = tmp.path().join("s3_valid.toml");
+    let target_esc = target_dir.display().to_string().replace('\\', "\\\\");
+    fs::write(
+        &s3_toml,
+        format!(
+            r#"
+[s3]
+bucket = "db-archive"
+region = "eu-west-3"
+endpoint = "https://s3.internal:9000"
+force_path_style = true
+
+[[rules]]
+name = "pg-wal"
+path = "{target_esc}"
+actions = ["compress", "upload_s3", "delete"]
+"#
+        ),
+    )
+    .unwrap();
+    Command::cargo_bin("filecleaner")
+        .unwrap()
+        .args(["validate", s3_toml.to_str().unwrap()])
+        .assert()
+        .success();
+
+    let s3_bad_yaml = tmp.path().join("s3_bad.yaml");
+    fs::write(
+        &s3_bad_yaml,
+        format!(
+            r#"
+rules:
+  - name: pg-wal
+    path: "{target_esc}"
+    actions:
+      - upload_s3
+    s3:
+      bucket: db-archive
+      region: eu-west-3
+      endpoint: http://minio.local:9000
+"#
+        ),
+    )
+    .unwrap();
+    Command::cargo_bin("filecleaner")
+        .unwrap()
+        .args(["validate", s3_bad_yaml.to_str().unwrap()])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("allow_insecure_http"));
 }
