@@ -745,6 +745,7 @@ fn engine_mid_sweep_shutdown_completes_active_file_and_cancels_remaining_queue()
         daemon: DaemonConfig::default(),
         audit: AuditConfig::default(),
         global_trash_dir: None,
+        s3: None,
         rules: vec![RuleConfig {
             name: "vault".to_string(),
             path: dir.clone(),
@@ -794,6 +795,7 @@ fn engine_mid_sweep_shutdown_completes_active_file_and_cancels_remaining_queue()
             compress_overwrite: false,
             copy_truncate_to: None,
             rename_template: None,
+            s3: None,
         }],
     };
 
@@ -891,6 +893,7 @@ fn daemon_multi_sweep_in_place_rename_and_compress_are_idempotent() {
         compress_overwrite: false,
         copy_truncate_to: None,
         rename_template: Some("%Y%m%d_%H%M%S".to_string()),
+        s3: None,
     };
 
     let mut compress_rule = rename_rule.clone();
@@ -915,6 +918,7 @@ fn daemon_multi_sweep_in_place_rename_and_compress_are_idempotent() {
         },
         audit: AuditConfig::default(),
         global_trash_dir: None,
+        s3: None,
         rules: vec![rename_rule, compress_rule],
     };
 

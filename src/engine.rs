@@ -967,6 +967,7 @@ mod tests {
             compress_overwrite: false,
             copy_truncate_to: None,
             rename_template: None,
+            s3: None,
         }
     }
 
@@ -1074,6 +1075,7 @@ mod tests {
                 jsonl: true,
             },
             global_trash_dir: None,
+            s3: None,
             rules: vec![rule, disabled_rule],
         };
 

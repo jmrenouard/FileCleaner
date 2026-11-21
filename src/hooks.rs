@@ -306,6 +306,7 @@ pub fn format_action_summary(actions: &[ActionStep], compression: CompressionFor
             ActionStep::Compress => format!("compress({compression:?})"),
             ActionStep::Move => "move".to_string(),
             ActionStep::CopyTruncate => "copy_truncate".to_string(),
+            ActionStep::UploadS3 => "upload_s3".to_string(),
             ActionStep::Trash => "trash".to_string(),
             ActionStep::Delete => "delete".to_string(),
         })
@@ -492,6 +493,17 @@ mod tests {
         assert_eq!(
             format_action_summary(&[ActionStep::Delete], CompressionFormat::Gzip),
             "delete"
+        );
+        assert_eq!(
+            format_action_summary(
+                &[
+                    ActionStep::Compress,
+                    ActionStep::UploadS3,
+                    ActionStep::Delete,
+                ],
+                CompressionFormat::Lz4
+            ),
+            "compress(Lz4)->upload_s3->delete"
         );
 
         assert_eq!(

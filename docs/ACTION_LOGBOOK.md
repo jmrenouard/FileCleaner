@@ -17,6 +17,19 @@
 
 ## 2. Completed Actions (`COMPLETED`)
 
+### ACT-010 — Add S3 Archival Config Schema, Validation Invariants, and Error Types (`Issue #24`)
+
+- **Date / Time (ISO)**: `2026-11-22T00:48:00Z`
+- **Issue / Branch**: `#24` (`feat/issue-24-s3-config-schema`)
+- **Request**: Implement the v1.1 `IDEA-001` configuration and validation foundation (`ActionStep::UploadS3`, `S3Config`, `S3VerifyMode`, `FileCleanerError::S3Upload`, `INV-CFG-10`..`INV-CFG-12`, and pipeline/hook accounting) with zero network dependencies.
+- **Changes**:
+  - [`src/config.rs`](../src/config.rs): Added `ActionStep::UploadS3` (non-terminal), `S3VerifyMode` (`ChecksumSha256` default, `ReadbackSha256`), `S3Config` (env-var-only credential names, zero plaintext secrets), `MIN_S3_MULTIPART_PART_SIZE` (`5 MiB`), global `Config.s3` + `Config::effective_s3`, rule-level `RuleConfig.s3`, and `INV-CFG-10`..`INV-CFG-12` validation (`validate_s3_config`).
+  - [`src/error.rs`](../src/error.rs): Added `FileCleanerError::S3Upload { path, uri, reason }` mapped to `EXIT_OPERATIONAL_ERROR` (`1`).
+  - [`src/hooks.rs`](../src/hooks.rs), [`src/actions.rs`](../src/actions.rs), [`src/policy.rs`](../src/policy.rs), [`src/scanner.rs`](../src/scanner.rs), [`src/cli.rs`](../src/cli.rs), [`src/lib.rs`](../src/lib.rs): Updated `format_action_summary` (`"upload_s3"`), kept `UploadS3` non-destructive alone (`RuleOutcome::Constrained` when caps remain exceeded), wired temporary `UploadS3` guard arm in `ActionExecutor::execute_pipeline`, exported new public config types, and initialized `s3: None` across struct literals.
+  - Tests: Added unit tests in `src/config.rs`, `src/error.rs`, `src/hooks.rs`, `src/policy.rs`, `src/actions.rs`, `src/cli.rs`, and CLI integration checks in [`tests/cli_validate.rs`](../tests/cli_validate.rs).
+- **Result**:
+  - Verified in WSL2 (`CARGO_TARGET_DIR=/tmp/filecleaner-target`): `cargo fmt --all -- --check` PASS, 3-target `cargo clippy --all-targets -- -D warnings` PASS (`0` warnings across Linux, `x86_64-pc-windows-gnu`, `aarch64-apple-darwin`), `cargo test --all-targets` PASS (`127/127`: `66` unit + `61` integration across `9` suites), and `cargo llvm-cov --all-targets --workspace --summary-only --fail-under-lines 90` PASS (`94.50%` line coverage / `92.69%` region coverage across `9,533` lines). Dedicated `/ponytail-review` caught and fixed untrimmed whitespace/embedded-credential/upper-bound `multipart_part_size` validation edge cases before merge (PR `#25`).
+
 ### ACT-009 — Release `v1.0.1` and Publish Multi-Arch Docker Hub Image (`jmrenouard/filecleaner`) (`Issue #22`)
 
 - **Date / Time (ISO)**: `2026-11-20T22:23:00Z`

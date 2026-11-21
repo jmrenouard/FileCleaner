@@ -138,6 +138,17 @@ pub enum FileCleanerError {
     /// Daemon lifecycle, PID, signal, or filesystem watcher error.
     #[error("daemon error: {0}")]
     Daemon(String),
+
+    /// S3 or S3-compatible object storage upload, authentication, or verification error.
+    #[error("S3 upload failed for '{path}' -> '{uri}': {reason}")]
+    S3Upload {
+        /// Local candidate path being archived.
+        path: PathBuf,
+        /// Target S3 URI (`s3://<bucket>/<key>`).
+        uri: String,
+        /// Detailed transport, authentication, or verification failure description.
+        reason: String,
+    },
 }
 
 impl FileCleanerError {
@@ -188,5 +199,13 @@ mod tests {
         };
         assert!(timeout.to_string().contains("15s"));
         assert!(timeout.to_string().contains("nightly"));
+
+        let s3_err = FileCleanerError::S3Upload {
+            path: PathBuf::from("/var/backups/db.sql.gz"),
+            uri: "s3://archive-bucket/db.sql.gz".to_string(),
+            reason: "connection timed out".to_string(),
+        };
+        assert!(s3_err.to_string().contains("s3://archive-bucket/db.sql.gz"));
+        assert!(s3_err.to_string().contains("connection timed out"));
     }
 }

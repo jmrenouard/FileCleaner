@@ -272,6 +272,14 @@ impl ActionExecutor {
                     final_path = Some(archive_dest);
                     steps_executed.push("CopyTruncate".to_string());
                 }
+                ActionStep::UploadS3 => {
+                    return Err(FileCleanerError::S3Upload {
+                        path: target.path.clone(),
+                        uri: "s3://<unconfigured>".to_string(),
+                        reason: "S3 archival sink execution requires the S3 uploader backend"
+                            .to_string(),
+                    });
+                }
                 ActionStep::Trash => {
                     let trash_dir =
                         rule.trash_dir
@@ -1154,6 +1162,7 @@ mod tests {
             compress_overwrite: false,
             copy_truncate_to: None,
             rename_template: None,
+            s3: None,
         }
     }
 
@@ -1264,6 +1273,13 @@ mod tests {
         assert!(matches!(
             ActionExecutor::execute_pipeline(target.clone(), &no_trash, None, false),
             Err(FileCleanerError::ConfigValidation(_))
+        ));
+
+        let mut s3_stub = base_rule(tmp.path().to_path_buf());
+        s3_stub.actions = vec![ActionStep::UploadS3];
+        assert!(matches!(
+            ActionExecutor::execute_pipeline(target.clone(), &s3_stub, None, false),
+            Err(FileCleanerError::S3Upload { .. })
         ));
 
         // Invalid rename_template rejected cleanly.

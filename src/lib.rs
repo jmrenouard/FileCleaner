@@ -28,7 +28,8 @@ pub use cli::{
 pub use config::{
     parse_bytes, parse_duration_str, ActionStep, AuditConfig, BackupGuardConfig, CombineMode,
     CompressionFormat, Config, DaemonConfig, DaemonMode, EvictionOrder, HookConfig,
-    HookFailurePolicy, InUseConfig, RuleConfig, TimeBasis,
+    HookFailurePolicy, InUseConfig, RuleConfig, S3Config, S3VerifyMode, TimeBasis,
+    MIN_S3_MULTIPART_PART_SIZE,
 };
 pub use daemon::{
     daemon_status, daemon_stop, effective_watch_mode, generate_service_template, is_pid_alive,

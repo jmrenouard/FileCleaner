@@ -9,6 +9,12 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
+/// Minimum S3 multipart upload part size (`5 MiB`), matching S3 protocol limits.
+pub const MIN_S3_MULTIPART_PART_SIZE: u64 = 5 * 1024 * 1024;
+/// Maximum S3 multipart upload part size (`5 GiB`), matching S3 protocol limits.
+pub const MAX_S3_MULTIPART_PART_SIZE: u64 = 5 * 1024 * 1024 * 1024;
+const DEFAULT_S3_MULTIPART_PART_SIZE: u64 = 16 * 1024 * 1024;
+
 /// Top-level FileCleaner configuration loaded from TOML or YAML.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Config {
@@ -33,6 +39,11 @@ pub struct Config {
     #[serde(default)]
     pub global_trash_dir: Option<PathBuf>,
 
+    /// Fallback S3 / S3-compatible archival sink settings when a rule selects
+    /// `ActionStep::UploadS3` without specifying a rule-local `s3` block.
+    #[serde(default)]
+    pub s3: Option<S3Config>,
+
     /// Ordered list of directory retention and lifecycle rules.
     #[serde(default)]
     pub rules: Vec<RuleConfig>,
@@ -42,6 +53,11 @@ impl Config {
     /// Returns the effective audit log path, preferring `[audit].log_path` over top-level `audit_log`.
     pub fn effective_audit_log(&self) -> Option<&Path> {
         self.audit.log_path.as_deref().or(self.audit_log.as_deref())
+    }
+
+    /// Returns the effective S3 configuration for `rule`, preferring `rule.s3` over global `self.s3`.
+    pub fn effective_s3<'a>(&'a self, rule: &'a RuleConfig) -> Option<&'a S3Config> {
+        rule.s3.as_ref().or(self.s3.as_ref())
     }
 }
 
@@ -277,6 +293,10 @@ pub struct RuleConfig {
     /// Optional filename template when `actions` includes `ActionStep::RenameByDate`.
     #[serde(default)]
     pub rename_template: Option<String>,
+
+    /// Optional rule-specific S3 / S3-compatible archival sink settings (overrides global `[s3]`).
+    #[serde(default)]
+    pub s3: Option<S3Config>,
 }
 
 /// Source of truth for candidate file timestamps.
@@ -475,12 +495,119 @@ pub enum ActionStep {
     /// Atomically copy content and truncate active file in place (explicit opt-in).
     #[serde(alias = "CopyTruncate")]
     CopyTruncate,
+    /// Upload candidate to S3 / S3-compatible object storage with mandatory SHA-256 verification.
+    #[serde(alias = "UploadS3")]
+    UploadS3,
     /// Move file to quarantine directory (`trash_dir` or `global_trash_dir`).
     #[serde(alias = "Trash")]
     Trash,
     /// Permanently unlink the candidate file.
     #[serde(alias = "Delete")]
     Delete,
+}
+
+/// Post-upload cryptographic integrity verification strategy for `ActionStep::UploadS3`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum S3VerifyMode {
+    /// Fail-closed verification requiring `HeadObject` `x-amz-checksum-sha256` and `Content-Length` match.
+    #[default]
+    #[serde(alias = "ChecksumSha256")]
+    ChecksumSha256,
+    /// Explicit opt-in streaming `GetObject` readback computing SHA-256 for legacy S3 gateways.
+    #[serde(alias = "ReadbackSha256")]
+    ReadbackSha256,
+}
+
+/// S3 / S3-compatible archival sink settings.
+///
+/// Credentials are read exclusively from configured environment variables; plaintext secret fields are disallowed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct S3Config {
+    /// Target S3 bucket name.
+    pub bucket: String,
+
+    /// AWS or S3-compatible signing region (e.g., `"us-east-1"`).
+    pub region: String,
+
+    /// Optional custom endpoint URL (e.g., `"https://minio.internal:9000"`).
+    #[serde(default)]
+    pub endpoint: Option<String>,
+
+    /// Optional static key prefix prepended to uploaded object keys.
+    #[serde(default)]
+    pub prefix: Option<String>,
+
+    /// Optional `chrono` `strftime` date subdirectory template appended after `prefix`.
+    #[serde(default)]
+    pub key_date_subdir: Option<String>,
+
+    /// Use path-style URLs (`<endpoint>/<bucket>/<key>`) rather than virtual-hosted style.
+    #[serde(default)]
+    pub force_path_style: bool,
+
+    /// Permit plaintext `http://` custom endpoints (defaults to `false`; `https://` required otherwise).
+    #[serde(default)]
+    pub allow_insecure_http: bool,
+
+    /// Permit overwriting an existing remote object key (defaults to `false`).
+    #[serde(default)]
+    pub overwrite: bool,
+
+    /// Optional S3 storage class header value (e.g., `"STANDARD_IA"`, `"GLACIER"`).
+    #[serde(default)]
+    pub storage_class: Option<String>,
+
+    /// Post-upload SHA-256 verification strategy (`checksum_sha256` default).
+    #[serde(default)]
+    pub verify_mode: S3VerifyMode,
+
+    /// Environment variable name supplying the S3 access key ID.
+    #[serde(default = "default_s3_access_key_env")]
+    pub access_key_env: String,
+
+    /// Environment variable name supplying the S3 secret access key.
+    #[serde(default = "default_s3_secret_key_env")]
+    pub secret_key_env: String,
+
+    /// Optional environment variable name supplying a temporary S3 session token.
+    #[serde(default = "default_s3_session_token_env")]
+    pub session_token_env: Option<String>,
+
+    /// Per-request network timeout (default `"60s"`).
+    #[serde(default = "default_s3_timeout", with = "serde_duration")]
+    pub timeout: Duration,
+
+    /// Maximum retry attempts for transient 5xx or transport failures (default `3`).
+    #[serde(default = "default_s3_max_retries")]
+    pub max_retries: u32,
+
+    /// Multipart threshold and part size in bytes (default `"16MiB"`, minimum `"5MiB"`).
+    #[serde(default = "default_s3_multipart_part_size", with = "serde_bytes")]
+    pub multipart_part_size: u64,
+}
+
+impl Default for S3Config {
+    fn default() -> Self {
+        Self {
+            bucket: String::new(),
+            region: String::new(),
+            endpoint: None,
+            prefix: None,
+            key_date_subdir: None,
+            force_path_style: false,
+            allow_insecure_http: false,
+            overwrite: false,
+            storage_class: None,
+            verify_mode: S3VerifyMode::ChecksumSha256,
+            access_key_env: default_s3_access_key_env(),
+            secret_key_env: default_s3_secret_key_env(),
+            session_token_env: default_s3_session_token_env(),
+            timeout: default_s3_timeout(),
+            max_retries: default_s3_max_retries(),
+            multipart_part_size: default_s3_multipart_part_size(),
+        }
+    }
 }
 
 /// Pure-Rust compression formats supported by `ActionStep::Compress`.
@@ -569,6 +696,10 @@ impl Config {
                     "global_trash_dir cannot be empty".to_string(),
                 ));
             }
+        }
+
+        if let Some(global_s3) = &self.s3 {
+            validate_s3_config("global [s3]", global_s3)?;
         }
 
         let mut seen_names = HashSet::with_capacity(self.rules.len());
@@ -664,6 +795,16 @@ impl Config {
                 )));
             }
 
+            if let Some(rule_s3) = &rule.s3 {
+                validate_s3_config(&format!("rule '{trimmed_name}' s3"), rule_s3)?;
+            }
+
+            if rule.actions.contains(&ActionStep::UploadS3) && self.effective_s3(rule).is_none() {
+                return Err(FileCleanerError::ConfigValidation(format!(
+                    "rule '{trimmed_name}' includes ActionStep::UploadS3 without rule s3 or global [s3] configuration"
+                )));
+            }
+
             if let Some(hook) = &rule.pre_delete_hook {
                 if hook.command.trim().is_empty() {
                     return Err(FileCleanerError::ConfigValidation(format!(
@@ -723,6 +864,127 @@ impl Config {
 
         Ok(())
     }
+}
+
+/// Validates S3 archival sink configuration invariants (`INV-CFG-11` and `INV-CFG-12`).
+fn validate_s3_config(scope: &str, s3: &S3Config) -> Result<()> {
+    let bucket = s3.bucket.as_str();
+    if bucket.is_empty()
+        || bucket.contains('/')
+        || bucket.contains('\\')
+        || bucket.contains("..")
+        || bucket.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
+        return Err(FileCleanerError::ConfigValidation(format!(
+            "{scope} bucket must be a non-empty valid bucket name without slashes, whitespace, or control characters"
+        )));
+    }
+
+    let region = s3.region.as_str();
+    if region.is_empty()
+        || region.contains('/')
+        || region.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
+        return Err(FileCleanerError::ConfigValidation(format!(
+            "{scope} region must be non-empty without slashes, whitespace, or control characters"
+        )));
+    }
+
+    validate_env_var_name(scope, "access_key_env", &s3.access_key_env)?;
+    validate_env_var_name(scope, "secret_key_env", &s3.secret_key_env)?;
+    if let Some(token_env) = &s3.session_token_env {
+        validate_env_var_name(scope, "session_token_env", token_env)?;
+    }
+
+    if let Some(ep) = &s3.endpoint {
+        let rest = if let Some(after) = ep.strip_prefix("https://") {
+            after
+        } else if let Some(after) = ep.strip_prefix("http://") {
+            if !s3.allow_insecure_http {
+                return Err(FileCleanerError::ConfigValidation(format!(
+                    "{scope} endpoint '{ep}' uses plaintext http:// while allow_insecure_http is false"
+                )));
+            }
+            after
+        } else {
+            return Err(FileCleanerError::ConfigValidation(format!(
+                "{scope} endpoint '{ep}' must use https:// (or http:// with allow_insecure_http = true)"
+            )));
+        };
+
+        let host = rest.split('/').next().unwrap_or("");
+        if host.is_empty()
+            || ep.contains('@')
+            || ep.contains('?')
+            || ep.contains('#')
+            || ep.chars().any(|c| c.is_whitespace() || c.is_control())
+        {
+            return Err(FileCleanerError::ConfigValidation(format!(
+                "{scope} endpoint '{ep}' must include a valid host without embedded credentials, query/fragment, or whitespace"
+            )));
+        }
+    }
+
+    if let Some(prefix) = &s3.prefix {
+        if has_traversal_or_backslash(prefix) || prefix.chars().any(char::is_control) {
+            return Err(FileCleanerError::ConfigValidation(format!(
+                "{scope} prefix '{prefix}' must not contain '..' segments, backslashes, or control characters"
+            )));
+        }
+    }
+
+    if let Some(date_subdir) = &s3.key_date_subdir {
+        if date_subdir.trim().is_empty()
+            || has_traversal_or_backslash(date_subdir)
+            || date_subdir.chars().any(char::is_control)
+            || StrftimeItems::new(date_subdir).any(|item| matches!(item, Item::Error))
+        {
+            return Err(FileCleanerError::ConfigValidation(format!(
+                "{scope} has invalid key_date_subdir '{date_subdir}'"
+            )));
+        }
+    }
+
+    if let Some(storage_class) = &s3.storage_class {
+        if storage_class.trim().is_empty() || storage_class.chars().any(char::is_control) {
+            return Err(FileCleanerError::ConfigValidation(format!(
+                "{scope} storage_class must be non-empty without control characters"
+            )));
+        }
+    }
+
+    if s3.timeout.is_zero() {
+        return Err(FileCleanerError::ConfigValidation(format!(
+            "{scope} timeout must be greater than zero"
+        )));
+    }
+
+    if s3.multipart_part_size < MIN_S3_MULTIPART_PART_SIZE
+        || s3.multipart_part_size > MAX_S3_MULTIPART_PART_SIZE
+    {
+        return Err(FileCleanerError::ConfigValidation(format!(
+            "{scope} multipart_part_size ({}) must be between {MIN_S3_MULTIPART_PART_SIZE} (5 MiB) and {MAX_S3_MULTIPART_PART_SIZE} (5 GiB)",
+            s3.multipart_part_size
+        )));
+    }
+
+    Ok(())
+}
+
+fn validate_env_var_name(scope: &str, field: &str, raw: &str) -> Result<()> {
+    if raw.is_empty()
+        || raw.contains('=')
+        || raw.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
+        return Err(FileCleanerError::ConfigValidation(format!(
+            "{scope} {field} must be a non-empty environment variable name without whitespace or '='"
+        )));
+    }
+    Ok(())
+}
+
+fn has_traversal_or_backslash(raw: &str) -> bool {
+    raw.contains('\\') || raw.split('/').any(|seg| seg == "..")
 }
 
 /// Rejects destination directories nested inside a recursive scan root unless explicitly excluded.
@@ -1031,6 +1293,30 @@ fn default_actions() -> Vec<ActionStep> {
     vec![ActionStep::Delete]
 }
 
+fn default_s3_access_key_env() -> String {
+    "AWS_ACCESS_KEY_ID".to_string()
+}
+
+fn default_s3_secret_key_env() -> String {
+    "AWS_SECRET_ACCESS_KEY".to_string()
+}
+
+fn default_s3_session_token_env() -> Option<String> {
+    Some("AWS_SESSION_TOKEN".to_string())
+}
+
+fn default_s3_timeout() -> Duration {
+    Duration::from_secs(60)
+}
+
+fn default_s3_max_retries() -> u32 {
+    3
+}
+
+fn default_s3_multipart_part_size() -> u64 {
+    DEFAULT_S3_MULTIPART_PART_SIZE
+}
+
 fn default_sidecar_suffixes() -> Vec<String> {
     vec![
         ".lock".to_string(),
@@ -1278,6 +1564,7 @@ mod tests {
             compress_overwrite: false,
             copy_truncate_to: None,
             rename_template: None,
+            s3: None,
         }
     }
 
@@ -2077,5 +2364,217 @@ run_in_dry_run = true
         }
         .validate()
         .unwrap();
+    }
+
+    #[test]
+    fn s3_config_parses_toml_and_yaml_and_enforces_invariants_10_to_12() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("wal");
+        fs::create_dir_all(&dir).unwrap();
+        let dir_esc = dir.display().to_string().replace('\\', "\\\\");
+
+        // Valid TOML using global [s3] fallback and rule-level override.
+        let toml_path = tmp.path().join("s3.toml");
+        fs::write(
+            &toml_path,
+            format!(
+                r#"
+[s3]
+bucket = "global-archive"
+region = "eu-west-3"
+endpoint = "https://minio.internal:9000"
+force_path_style = true
+verify_mode = "checksum_sha256"
+multipart_part_size = "16MiB"
+timeout = "45s"
+
+[[rules]]
+name = "pg-wal"
+path = "{dir_esc}"
+actions = ["compress", "upload_s3", "delete"]
+
+[[rules]]
+name = "pg-dumps"
+path = "{dir_esc}"
+actions = ["UploadS3", "move"]
+move_to = "/var/archive"
+
+[rules.s3]
+bucket = "dumps-bucket"
+region = "us-east-1"
+endpoint = "http://127.0.0.1:9000"
+allow_insecure_http = true
+prefix = "postgres/dumps"
+key_date_subdir = "%Y/%m/%d"
+storage_class = "STANDARD_IA"
+verify_mode = "readback_sha256"
+access_key_env = "PG_S3_KEY"
+secret_key_env = "PG_S3_SECRET"
+session_token_env = "PG_S3_TOKEN"
+multipart_part_size = "5MiB"
+"#
+            ),
+        )
+        .unwrap();
+        let cfg = Config::load_validated(&toml_path).unwrap();
+        assert_eq!(
+            cfg.effective_s3(&cfg.rules[0]).unwrap().bucket,
+            "global-archive"
+        );
+        let r1_s3 = cfg.effective_s3(&cfg.rules[1]).unwrap();
+        assert_eq!(r1_s3.bucket, "dumps-bucket");
+        assert_eq!(r1_s3.verify_mode, S3VerifyMode::ReadbackSha256);
+        assert_eq!(r1_s3.multipart_part_size, MIN_S3_MULTIPART_PART_SIZE);
+
+        // Valid YAML with global s3 + UploadS3 before Trash.
+        let yaml_path = tmp.path().join("s3.yaml");
+        fs::write(
+            &yaml_path,
+            format!(
+                r#"
+global_trash_dir: /var/tmp/trash
+s3:
+  bucket: yaml-archive
+  region: eu-central-1
+rules:
+  - name: yaml-s3
+    path: "{dir_esc}"
+    actions:
+      - upload_s3
+      - trash
+"#
+            ),
+        )
+        .unwrap();
+        let ycfg = Config::load_validated(&yaml_path).unwrap();
+        assert_eq!(
+            ycfg.effective_s3(&ycfg.rules[0]).unwrap().access_key_env,
+            "AWS_ACCESS_KEY_ID"
+        );
+
+        // INV-CFG-10: UploadS3 without global or rule s3 is rejected.
+        let mut missing_s3 = minimal_rule("no-s3", dir.clone());
+        missing_s3.actions = vec![ActionStep::UploadS3, ActionStep::Delete];
+        assert!(Config {
+            rules: vec![missing_s3],
+            ..Config::default()
+        }
+        .validate()
+        .is_err());
+
+        // INV-CFG-11 & INV-CFG-12 invalid mutations rejected on S3Config.
+        let valid_s3 = S3Config {
+            bucket: "ok-bucket".to_string(),
+            region: "us-east-1".to_string(),
+            ..S3Config::default()
+        };
+        let invalid_cases: Vec<S3Config> = vec![
+            S3Config {
+                bucket: "   ".into(),
+                ..valid_s3.clone()
+            },
+            S3Config {
+                bucket: "bad/bucket".into(),
+                ..valid_s3.clone()
+            },
+            S3Config {
+                region: "".into(),
+                ..valid_s3.clone()
+            },
+            S3Config {
+                access_key_env: "BAD=NAME".into(),
+                ..valid_s3.clone()
+            },
+            S3Config {
+                secret_key_env: "".into(),
+                ..valid_s3.clone()
+            },
+            S3Config {
+                session_token_env: Some("  ".into()),
+                ..valid_s3.clone()
+            },
+            S3Config {
+                endpoint: Some("http://minio.local:9000".into()),
+                allow_insecure_http: false,
+                ..valid_s3.clone()
+            },
+            S3Config {
+                endpoint: Some("ftp://minio.local".into()),
+                ..valid_s3.clone()
+            },
+            S3Config {
+                endpoint: Some("https://".into()),
+                ..valid_s3.clone()
+            },
+            S3Config {
+                prefix: Some("a/../b".into()),
+                ..valid_s3.clone()
+            },
+            S3Config {
+                key_date_subdir: Some("%Q".into()),
+                ..valid_s3.clone()
+            },
+            S3Config {
+                key_date_subdir: Some("../%Y".into()),
+                ..valid_s3.clone()
+            },
+            S3Config {
+                storage_class: Some("STANDARD\r\nX-Inject: 1".into()),
+                ..valid_s3.clone()
+            },
+            S3Config {
+                timeout: Duration::ZERO,
+                ..valid_s3.clone()
+            },
+            S3Config {
+                multipart_part_size: MIN_S3_MULTIPART_PART_SIZE - 1,
+                ..valid_s3.clone()
+            },
+            S3Config {
+                multipart_part_size: MAX_S3_MULTIPART_PART_SIZE + 1,
+                ..valid_s3.clone()
+            },
+            S3Config {
+                bucket: " leading-space ".into(),
+                ..valid_s3.clone()
+            },
+            S3Config {
+                region: " us-east-1 ".into(),
+                ..valid_s3.clone()
+            },
+            S3Config {
+                access_key_env: " AWS_ACCESS_KEY_ID ".into(),
+                ..valid_s3.clone()
+            },
+            S3Config {
+                endpoint: Some("https://user:pass@minio.local:9000".into()),
+                ..valid_s3
+            },
+        ];
+
+        for (idx, bad) in invalid_cases.into_iter().enumerate() {
+            let mut r = minimal_rule("bad-s3", dir.clone());
+            r.actions = vec![ActionStep::UploadS3];
+            r.s3 = Some(bad.clone());
+            assert!(
+                Config {
+                    rules: vec![r],
+                    ..Config::default()
+                }
+                .validate()
+                .is_err(),
+                "expected invalid rule S3Config case #{idx} to fail validation"
+            );
+            assert!(
+                Config {
+                    s3: Some(bad),
+                    rules: vec![minimal_rule("ok", dir.clone())],
+                    ..Config::default()
+                }
+                .validate()
+                .is_err(),
+                "expected invalid global S3Config case #{idx} to fail validation"
+            );
+        }
     }
 }

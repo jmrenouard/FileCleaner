@@ -54,6 +54,7 @@ fn backup_rule(name: &str) -> RuleConfig {
         compress_overwrite: false,
         copy_truncate_to: None,
         rename_template: None,
+        s3: None,
     }
 }
 

@@ -1295,6 +1295,7 @@ mod tests {
                 jsonl: true,
             },
             global_trash_dir: None,
+            s3: None,
             rules: vec![RuleConfig {
                 name: "spool".to_string(),
                 path: watch_dir.to_path_buf(),
@@ -1335,6 +1336,7 @@ mod tests {
                 compress_overwrite: false,
                 copy_truncate_to: None,
                 rename_template: None,
+                s3: None,
             }],
         }
     }
@@ -1895,6 +1897,7 @@ mod tests {
             compress_overwrite: false,
             copy_truncate_to: None,
             rename_template: None,
+            s3: None,
         };
         let mut r2 = r1.clone();
         r2.name = "r2".to_string();
