@@ -360,9 +360,66 @@ fn cargo_manifest_enforces_version_and_pure_rust_contract() {
     let deps = parsed["dependencies"].as_table().unwrap();
     for dep_name in deps.keys() {
         assert!(
-            !dep_name.ends_with("-sys"),
-            "forbidden C/C++ -sys dependency detected: {dep_name}"
+            !dep_name.ends_with("-sys")
+                && dep_name != "ring"
+                && !dep_name.starts_with("aws-lc")
+                && !dep_name.starts_with("openssl"),
+            "forbidden C/C++ or native crypto dependency detected in Cargo.toml: {dep_name}"
         );
+    }
+    let ureq_dep = deps["ureq"].as_table().expect("ureq must be a table dep");
+    assert_eq!(
+        ureq_dep.get("default-features").and_then(|v| v.as_bool()),
+        Some(false)
+    );
+    let rustls_dep = deps["rustls"]
+        .as_table()
+        .expect("rustls must be a table dep");
+    assert_eq!(
+        rustls_dep.get("default-features").and_then(|v| v.as_bool()),
+        Some(false)
+    );
+
+    // Verify Cargo.lock contains zero forbidden C/C++ library bindings and keeps rustls/ureq off `ring`.
+    let lock_raw = fs::read_to_string(manifest_dir().join("Cargo.lock")).unwrap();
+    let lock_val: toml::Value = toml::from_str(&lock_raw).unwrap();
+    let packages = lock_val["package"].as_array().expect("Cargo.lock packages");
+    let forbidden_exact = [
+        "openssl",
+        "openssl-sys",
+        "aws-lc-rs",
+        "aws-lc-sys",
+        "aws-lc-fips-sys",
+        "zstd-sys",
+        "liblz4-sys",
+        "bzip2-sys",
+        "zlib-ng-sys",
+        "libz-sys",
+        "curl-sys",
+        "cmake",
+    ];
+    for pkg_entry in packages {
+        let name = pkg_entry["name"].as_str().unwrap_or("");
+        assert!(
+            !forbidden_exact.contains(&name),
+            "forbidden native/C dependency detected in Cargo.lock: {name}"
+        );
+        if matches!(
+            name,
+            "filecleaner" | "ureq" | "rustls" | "rustls-rustcrypto"
+        ) {
+            if let Some(pkg_deps) = pkg_entry.get("dependencies").and_then(|d| d.as_array()) {
+                for dep in pkg_deps {
+                    let dep_str = dep.as_str().unwrap_or("");
+                    assert!(
+                        !dep_str.starts_with("ring")
+                            && !dep_str.starts_with("aws-lc")
+                            && !dep_str.starts_with("native-tls"),
+                        "package '{name}' in Cargo.lock must not depend on native crypto '{dep_str}'"
+                    );
+                }
+            }
+        }
     }
     assert!(
         parsed.get("lints").is_none(),

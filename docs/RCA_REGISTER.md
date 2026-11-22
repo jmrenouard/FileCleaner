@@ -224,6 +224,18 @@
 
 ---
 
+### APP-003 — Pure-Rust TLS Cryptography via `rustls-rustcrypto` (`v0.1.0-pre.0`) Over `ureq` v3 (`rustls-no-provider`)
+- **Target Scope**: `Cargo.toml`, `src/s3.rs` (`HttpS3Uploader`), `tests/governance_and_docs_test.rs`.
+- **Nature of the Approximation**:
+  - To preserve `IMP-001` (zero C/C++ `-sys` build dependencies, zero `ring`, zero `aws-lc-sys`, zero `openssl-sys`) across all 9 release cross-compilation targets (including `aarch64-unknown-linux-musl`, `armv7-unknown-linux-gnueabihf`, and `aarch64-pc-windows-msvc`), `HttpS3Uploader` configures `ureq` v3 (`default-features = false`, `rustls-no-provider`, `rustls-webpki-roots`) with `rustls` v0.23 and the pure-Rust `rustls-rustcrypto` `CryptoProvider` (`0.1.0-pre.0`, RustCrypto implementations supporting RSA, ECDSA, Ed25519, AES-GCM, and ChaCha20-Poly1305).
+  - Note that `Cargo.lock` still records `ring` solely as an inactive optional dependency entry of `rustls-webpki` (`alloc,std` features only); `cargo tree` across Linux, Windows, and macOS confirms `ring` and `cc` are absent from the compiled build graph.
+- **Justification & Impact**:
+  - Guarantees deterministic single-binary cross-compilation without C cross-compilers or assembler toolchains while supporting standard TLS 1.2/1.3 endpoints including AWS S3 RSA certificates and MinIO TLS gateways. Slightly lower raw TLS throughput than hand-tuned C assembly (`aws-lc-rs`) is negligible compared to WAN/LAN S3 archival I/O.
+- **Removal Condition**:
+  - Upgrade `rustls-rustcrypto` to a stable `0.1.x` / `1.0.x` release once published by the RustCrypto organization, without reintroducing C/C++ build dependencies.
+
+---
+
 ## 4. Unimplemented Ideas & Future Roadmap (`IDEA`)
 
 | ID | Target Release | Priority | Title | Target Module / Area | Description & Expected Value |
