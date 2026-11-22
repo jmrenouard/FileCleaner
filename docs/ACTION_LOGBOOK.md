@@ -17,6 +17,18 @@
 
 ## 2. Completed Actions (`COMPLETED`)
 
+### ACT-012 — Integrate Fail-Closed `UploadS3` Action into Pipeline, Engine, and Audit Log (`Issue #28`)
+
+- **Date / Time (ISO)**: `2026-11-22T02:28:00Z`
+- **Issue / Branch**: `#28` (`feat/issue-28-s3-pipeline-integration`)
+- **Request**: Connect `src/s3.rs` (`S3Uploader`) into FileCleaner's Phase 6 action pipeline (`src/actions.rs`), sweep orchestrator (`src/engine.rs`), and structured JSONL audit logging (`src/audit.rs`) with strict fail-closed deletion guarantees, dry-run parity, and cross-platform loopback tests (`tests/s3_archival_sink_test.rs`).
+- **Changes**:
+  - [`src/actions.rs`](../src/actions.rs): Added `remote_uri: Option<String>` and `s3_receipt: Option<S3UploadReceipt>` to `ActionReport`; added backward-compatible `ActionExecutor::execute_pipeline_with_s3`; implemented live `ActionStep::UploadS3` with TOCTOU-safe `open_regular_nofollow_read` + handle-based SHA-256 hashing (`compute_handle_sha256`), fail-closed short-circuiting before `Delete`/`Trash`/`Move`, and zero-I/O dry-run URI projection.
+  - [`src/engine.rs`](../src/engine.rs): Added `SweepEngine::run_config_with_s3`, lazy single-uploader sharing for live S3 sweeps (zero overhead on non-S3 rules), propagation of global `config.s3`, and structured S3 audit metadata (`sha256`, `details.s3_uri`, `details.etag`, `details.verify_mode`, `details.parts_uploaded`, `details.verified_size`) on `ActionExec`, `FileDecision`, and `Error`.
+  - [`tests/s3_archival_sink_test.rs`](../tests/s3_archival_sink_test.rs): Added cross-platform loopback HTTP S3 integration tests covering `plan`/`--dry-run` parity, live `["compress", "upload_s3", "delete"]` decompression verification, fail-closed SHA-256 mismatch / overwrite collision / 500 preservation before `Delete`/`Trash`/`Move`, and injectable `SweepEngine::run_config_with_s3` `Constrained` and error-detail assertions.
+- **Result**:
+  - Verified in WSL2 (`CARGO_TARGET_DIR=/tmp/filecleaner-target`): `cargo fmt --all -- --check` PASS, 3-target `cargo clippy --all-targets -- -D warnings` PASS (`0` warnings), `cargo test --all-targets` PASS (`133/133`: `69` unit + `64` integration across `10` suites), and `cargo llvm-cov --all-targets --workspace --summary-only --fail-under-lines 90` PASS (`93.86%` line coverage / `92.07%` region coverage across `11,197` lines; `actions.rs` `90.57%`, `engine.rs` `97.64%`).
+
 ### ACT-011 — Implement Pure-Rust S3 SigV4 Client with Fail-Closed SHA-256 Verification (`Issue #26`)
 
 - **Date / Time (ISO)**: `2026-11-22T02:16:00Z`

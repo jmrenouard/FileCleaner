@@ -1,8 +1,11 @@
 //! Ordered lifecycle action pipeline, pure-Rust compression, atomic `.fc-tmp`
 //! staging, and cross-filesystem SHA-256 verified file transfers.
 
-use crate::config::{ActionStep, CompressionFormat, RuleConfig};
+use crate::config::{ActionStep, CompressionFormat, RuleConfig, S3Config};
 use crate::error::{FileCleanerError, Result};
+use crate::s3::{
+    build_object_key, build_s3_uri, HttpS3Uploader, S3UploadReceipt, S3UploadRequest, S3Uploader,
+};
 use chrono::format::{Item, StrftimeItems};
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use flate2::{Compression, GzBuilder};
@@ -46,8 +49,13 @@ pub struct ActionReport {
     pub final_path: Option<PathBuf>,
     /// Ordered step labels executed (`RenameByDate`, `Compress(Gzip)`, `Move`, etc.).
     pub steps_executed: Vec<String>,
-    /// Lowercase hex SHA-256 digest verified during cross-filesystem `Move`/`Trash`/`CopyTruncate`.
+    /// Lowercase hex SHA-256 digest verified during cross-filesystem `Move`/`Trash`/`CopyTruncate`
+    /// or `UploadS3`.
     pub sha256: Option<String>,
+    /// Remote archival URI (`s3://<bucket>/<key>`) when `ActionStep::UploadS3` ran or was simulated.
+    pub remote_uri: Option<String>,
+    /// Verified S3 upload receipt when live `ActionStep::UploadS3` succeeded.
+    pub s3_receipt: Option<S3UploadReceipt>,
     /// Bytes freed from the monitored source location (`0` in dry-run mode).
     pub bytes_freed: u64,
     /// Whether execution occurred in read-only dry-run simulation mode.
@@ -88,9 +96,25 @@ impl ActionExecutor {
     /// and creates zero `.fc-tmp` staging artifacts while projecting `final_path`
     /// and `steps_executed` consistently.
     pub fn execute_pipeline(
+        target: WorkingTarget,
+        rule: &RuleConfig,
+        global_trash_dir: Option<&Path>,
+        dry_run: bool,
+    ) -> Result<ActionReport> {
+        Self::execute_pipeline_with_s3(target, rule, global_trash_dir, None, None, dry_run)
+    }
+
+    /// Executes `rule.actions` sequentially against `target`, wiring optional global `[s3]`
+    /// fallback configuration and an injectable [`S3Uploader`] for `ActionStep::UploadS3`.
+    ///
+    /// When `dry_run || rule.dry_run` is `true`, performs zero filesystem mutations and zero
+    /// network I/O while projecting `final_path`, `remote_uri`, and `steps_executed`.
+    pub fn execute_pipeline_with_s3(
         mut target: WorkingTarget,
         rule: &RuleConfig,
         global_trash_dir: Option<&Path>,
+        global_s3: Option<&S3Config>,
+        s3_uploader: Option<&dyn S3Uploader>,
         dry_run: bool,
     ) -> Result<ActionReport> {
         let effective_dry_run = dry_run || rule.dry_run;
@@ -118,6 +142,9 @@ impl ActionExecutor {
         let mut final_path: Option<PathBuf> = Some(original_path.clone());
         let mut steps_executed = Vec::with_capacity(rule.actions.len());
         let mut verified_sha256: Option<String> = None;
+        let mut remote_uri: Option<String> = None;
+        let mut s3_receipt: Option<S3UploadReceipt> = None;
+        let mut fallback_uploader: Option<HttpS3Uploader> = None;
 
         for &step in &rule.actions {
             match step {
@@ -273,12 +300,49 @@ impl ActionExecutor {
                     steps_executed.push("CopyTruncate".to_string());
                 }
                 ActionStep::UploadS3 => {
-                    return Err(FileCleanerError::S3Upload {
-                        path: target.path.clone(),
-                        uri: "s3://<unconfigured>".to_string(),
-                        reason: "S3 archival sink execution requires the S3 uploader backend"
-                            .to_string(),
-                    });
+                    let s3_cfg = rule.s3.as_ref().or(global_s3).ok_or_else(|| {
+                        FileCleanerError::ConfigValidation(format!(
+                            "rule '{}' includes ActionStep::UploadS3 without rule s3 or global [s3] configuration",
+                            rule.name
+                        ))
+                    })?;
+                    let file_name = extract_file_name(&target.path)?
+                        .to_string_lossy()
+                        .into_owned();
+                    let key = build_object_key(
+                        s3_cfg.prefix.as_deref(),
+                        s3_cfg.key_date_subdir.as_deref(),
+                        target.mtime,
+                        &file_name,
+                        &format!("rule '{}'", rule.name),
+                    )?;
+                    let projected_uri = build_s3_uri(&s3_cfg.bucket, &key);
+
+                    if effective_dry_run {
+                        remote_uri = Some(projected_uri);
+                        steps_executed.push("UploadS3".to_string());
+                    } else {
+                        reject_symlink_if_disallowed(&target.path, rule.follow_symlinks)?;
+                        let (src_file, _) = open_regular_nofollow_read(&target.path)?;
+                        let (local_sha256, local_len) =
+                            compute_handle_sha256(src_file, &target.path)?;
+                        let req = S3UploadRequest {
+                            local_path: target.path.clone(),
+                            key,
+                            content_length: local_len,
+                            sha256_hex: local_sha256,
+                            config: s3_cfg.clone(),
+                        };
+                        let uploader: &dyn S3Uploader = match s3_uploader {
+                            Some(u) => u,
+                            None => fallback_uploader.get_or_insert_with(HttpS3Uploader::new),
+                        };
+                        let receipt = uploader.upload_and_verify(&req)?;
+                        verified_sha256 = Some(receipt.verified_sha256.clone());
+                        remote_uri = Some(receipt.uri.clone());
+                        s3_receipt = Some(receipt);
+                        steps_executed.push("UploadS3".to_string());
+                    }
                 }
                 ActionStep::Trash => {
                     let trash_dir =
@@ -335,6 +399,8 @@ impl ActionExecutor {
             final_path,
             steps_executed,
             sha256: verified_sha256,
+            remote_uri,
+            s3_receipt,
             bytes_freed,
             dry_run: effective_dry_run,
         })
@@ -509,6 +575,10 @@ impl ActionExecutor {
 /// Computes lowercase hex SHA-256 digest and byte length of an existing file on disk.
 pub fn compute_file_sha256(path: &Path) -> Result<(String, u64)> {
     let file = File::open(path).map_err(|err| FileCleanerError::io(path, err))?;
+    compute_handle_sha256(file, path)
+}
+
+fn compute_handle_sha256(file: File, path: &Path) -> Result<(String, u64)> {
     let mut reader = BufReader::new(file);
     let mut hasher = Sha256::new();
     let mut buf = [0u8; COPY_BUF_SIZE];
@@ -1275,11 +1345,11 @@ mod tests {
             Err(FileCleanerError::ConfigValidation(_))
         ));
 
-        let mut s3_stub = base_rule(tmp.path().to_path_buf());
-        s3_stub.actions = vec![ActionStep::UploadS3];
+        let mut s3_missing = base_rule(tmp.path().to_path_buf());
+        s3_missing.actions = vec![ActionStep::UploadS3];
         assert!(matches!(
-            ActionExecutor::execute_pipeline(target.clone(), &s3_stub, None, false),
-            Err(FileCleanerError::S3Upload { .. })
+            ActionExecutor::execute_pipeline(target.clone(), &s3_missing, None, false),
+            Err(FileCleanerError::ConfigValidation(_))
         ));
 
         // Invalid rename_template rejected cleanly.
