@@ -7,7 +7,7 @@
 > **Language Editions**: **English** · [Français (`docs/fr/EXEMPLES_RECETTES.md`)](../fr/EXEMPLES_RECETTES.md)  
 > **Related Docs**: [README](../../README.md) · [5-Minute HOWTO](HOWTO.md) · [User Guide](USER_GUIDE.md) · [Formal Specifications](SPECIFICATIONS.md)
 
-Every configuration in this cookbook conforms strictly to `src/config.rs` and `Config::validate()` invariants (`INV-CFG-01`..`INV-CFG-12`). Test any recipe safely before touching files via `filecleaner validate` and `filecleaner plan`.
+Every configuration in this cookbook conforms strictly to `src/config.rs` and `Config::validate()` invariants (`INV-CFG-01`..`INV-CFG-14`). Test any recipe safely before touching files via `filecleaner validate` and `filecleaner plan`.
 
 ---
 
@@ -17,6 +17,7 @@ Every configuration in this cookbook conforms strictly to `src/config.rs` and `C
 2. [Recipe 2: Application & Nginx Log Rotation (`CopyTruncate` Opt-In vs. `RenameByDate` + `Lz4`/`Brotli`)](#2-recipe-2-application--nginx-log-rotation)
 3. [Recipe 3: High-Throughput ETL Incoming Spool (Sidecars, `flock`, Stability Window & Exit-`42` Checksum Veto)](#3-recipe-3-high-throughput-etl-incoming-spool)
 4. [Recipe 4: Multi-Rule Daemon Deployment (`Hybrid` Mode, PID/State/Stop Files & Strict Alerting)](#4-recipe-4-multi-rule-daemon-deployment)
+5. [Recipe 5: PostgreSQL Base Backups & WAL Spool Archival to S3 / MinIO (`upload_s3` + PITR Guard + Docker E2E)](#5-recipe-5-postgresql-base-backups--wal-spool-archival-to-s3--minio)
 
 ---
 
@@ -496,3 +497,157 @@ filecleaner daemon stop -c /etc/filecleaner/production-daemon.toml --timeout 30s
 ```
 
 In this example, `constrained_rules: ["db-backups"]` signals that keeping the mandatory `min_keep_files = 5` local backups exceeded the `40GiB` quota—FileCleaner protected all `5` newest valid dumps, pruned everything older, and logged the constraint clearly so an operator can either expand `/var/backups/postgres` or lower `min_keep_files`.
+
+---
+
+## 5. Recipe 5: PostgreSQL Base Backups & WAL Spool Archival to S3 / MinIO
+
+### Operational Goal
+
+Archive PostgreSQL base dumps and 16 MiB WAL segments directly to AWS S3 or an on-premise MinIO / Ceph RGW object store with zero C/C++ dependencies and strict fail-closed integrity:
+
+- **Starter generation**: Generate a safe `dry_run = true` baseline instantly via `filecleaner init --profile dba-postgres --format toml` (canonical examples shipped in `examples/dba-postgres-wal-s3.toml` and `examples/dba-postgres-wal-s3.yaml`).
+- **Fail-closed SHA-256 S3 archival (`upload_s3`)**: Compresses eligible base dumps (`gzip`) and 16 MiB WAL segments (`lz4`), streams them via pure-Rust AWS SigV4 (`ureq` v3 + `rustls-rustcrypto`), verifies remote `x-amz-checksum-sha256` and `Content-Length` via `HeadObject`, and executes `delete` **only after** cryptographic verification succeeds.
+- **Zero plaintext secrets**: S3 credentials are injected exclusively through environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, optional `AWS_SESSION_TOKEN`) and masked in memory (`RedactedSecret`).
+- **PostgreSQL PITR & timeline safety**: Matches only canonical 24-hex WAL segments (`^[0-9A-F]{24}$`, `min_file_size = "16MiB"`), unconditionally excludes `*.history`, `*.partial`, `*.ready`, `*.done`, `*.tmp`, and `archive_status/**`, and attaches `examples/hooks/verify_pg_wal_safe.sh` (`exit 42` veto for segments held by active base backups or lagging standby replicas).
+
+### Configuration (`/etc/filecleaner/dba-postgres-wal-s3.toml`)
+
+```toml
+dry_run = false
+
+[audit]
+log_path = "/var/log/filecleaner/pg-wal-s3-audit.jsonl"
+jsonl = true
+
+[s3]
+bucket = "pg-pitr-archive"
+region = "eu-west-3"
+endpoint = "https://minio.internal:9000"
+force_path_style = true
+allow_insecure_http = false
+overwrite = false
+verify_mode = "checksum_sha256"
+access_key_env = "AWS_ACCESS_KEY_ID"
+secret_key_env = "AWS_SECRET_ACCESS_KEY"
+session_token_env = "AWS_SESSION_TOKEN"
+timeout = "60s"
+max_retries = 3
+multipart_part_size = "16MiB"
+
+[[rules]]
+name = "pg-base-backups"
+path = "/var/backups/postgres/base"
+recursive = true
+max_depth = 2
+follow_symlinks = false
+include_globs = ["*.sql", "*.sql.gz", "*.dump", "*.tar"]
+exclude_globs = ["pinned/**", "*.keep"]
+min_file_size = "1KiB"
+time_basis = "filename_date"
+filename_date_regex = 'pg_(\d{8}_\d{6})'
+filename_date_format = "%Y%m%d_%H%M%S"
+max_files = 14
+max_age = "30d"
+max_total_size = "200GiB"
+actions = ["compress", "upload_s3", "delete"]
+compression = "gzip"
+
+[rules.s3]
+bucket = "pg-pitr-archive"
+region = "eu-west-3"
+endpoint = "https://minio.internal:9000"
+prefix = "postgres/base-backups"
+key_date_subdir = "%Y/%m"
+force_path_style = true
+overwrite = false
+verify_mode = "checksum_sha256"
+
+[rules.backup_guard]
+enabled = true
+min_keep_files = 7
+min_valid_backup_bytes = "1MiB"
+require_newer_within = "36h"
+freeze_on_empty_valid = true
+
+[rules.in_use]
+enabled = true
+min_idle_age = "2m"
+stability_window = "5s"
+
+[[rules]]
+name = "pg-wal-archive"
+path = "/var/lib/postgresql/wal_archive"
+recursive = false
+follow_symlinks = false
+include_regex = '^[0-9A-F]{24}$'
+exclude_globs = ["*.history", "*.partial", "*.ready", "*.done", "*.tmp", "archive_status/**"]
+min_file_size = "16MiB"
+time_basis = "modified"
+max_files = 64
+max_age = "7d"
+max_total_size = "100GiB"
+actions = ["compress", "upload_s3", "delete"]
+compression = "lz4"
+
+[rules.s3]
+bucket = "pg-pitr-archive"
+region = "eu-west-3"
+endpoint = "https://minio.internal:9000"
+prefix = "postgres/wal"
+key_date_subdir = "%Y/%m/%d"
+force_path_style = true
+overwrite = false
+verify_mode = "checksum_sha256"
+
+[rules.backup_guard]
+enabled = true
+min_keep_files = 16
+min_valid_backup_bytes = "16MiB"
+freeze_on_empty_valid = true
+
+[rules.in_use]
+enabled = true
+min_idle_age = "60s"
+stability_window = "3s"
+
+[rules.pre_delete_hook]
+command = "/usr/local/bin/verify_pg_wal_safe.sh"
+args = ["--file", "{path}", "--name", "{name}", "--rule", "{rule}"]
+timeout = "15s"
+on_failure = "abort_file"
+skip_exit_code = 42
+run_in_dry_run = false
+
+[rules.pre_delete_hook.env]
+FILECLEANER_PG_MIN_KEEP_WAL_FILE = "/var/lib/postgresql/wal_archive/.pitr_min_keep_wal"
+```
+
+### Verification, Live Execution & Docker E2E Lab
+
+```bash
+# 1. Generate starter DBA profile (dry_run = true by default)
+filecleaner init --profile dba-postgres --format toml --output /etc/filecleaner/dba-postgres-wal-s3.toml
+
+# 2. Export S3 credentials via environment variables (never store secrets in TOML/YAML)
+export AWS_ACCESS_KEY_ID="minio-archive-writer"
+export AWS_SECRET_ACCESS_KEY="<injected-from-vault>"
+
+# 3. Validate invariants (INV-CFG-01..14) and inspect zero-I/O S3 URI dry-run plan
+filecleaner validate /etc/filecleaner/dba-postgres-wal-s3.toml
+filecleaner plan -c /etc/filecleaner/dba-postgres-wal-s3.toml --json
+
+# 4. Run live fail-closed archival sweep (exit 3 alerts on staleness freeze; exit 1 on S3/checksum fault)
+filecleaner run -c /etc/filecleaner/dba-postgres-wal-s3.toml --fail-on-freeze
+
+# 5. Reproducible live Docker E2E lab (PostgreSQL 17 compatible with multi-db-docker-env + pinned MinIO)
+bash scripts/e2e-dba-s3-lab.sh
+# Or via Cargo ignored E2E suite:
+cargo test --test e2e_dba_s3_docker_test -- --ignored --nocapture
+```
+
+### Expected S3 Audit Record (`audit.jsonl`)
+
+```json
+{"ts":"2026-11-22T03:04:01.412Z","event":"action_exec","run_id":"run-7681-1","rule":"pg-wal-archive","path":"/var/lib/postgresql/wal_archive/000000010000000000000001","size_bytes":16777216,"resolved_ts":"2026-11-21T02:00:00Z","decision":"acted","in_use_reasons":null,"actions":["Compress(Lz4)","UploadS3","Delete"],"dest_path":"s3://pg-pitr-archive/postgres/wal/2026/11/21/000000010000000000000001.lz4","sha256":"dac906d5f1872d44e1d0f0b47c8e9c9a21f42c44d8f28a391b7c98f3b21c5e12","details":{"etag":"\"597539973be5e225\"","parts_uploaded":1,"s3_uri":"s3://pg-pitr-archive/postgres/wal/2026/11/21/000000010000000000000001.lz4","verified_size":84210,"verify_mode":"checksum_sha256"},"dry_run":false,"duration_ms":64,"error":null}
+```

@@ -65,11 +65,12 @@ Tout artefact interne correspondant à `*.fc-tmp`, `*.fc-tmp.*` ou au journal ar
 
 ### 1.4 Portabilité pure-Rust et contrat de compilation croisée (9 cibles)
 
-FileCleaner v1.0.1 proscrit toute dépendance C/C++ `-sys` (`openssl-sys`, `libz-sys`, `liblz4-sys`, `bzip2-sys`) au profit exclusive de crates 100 % Rust :
+FileCleaner proscrit toute dépendance C/C++ `-sys` (`openssl-sys`, `aws-lc-sys`, `ring`, `libz-sys`, `liblz4-sys`, `bzip2-sys`) au profit exclusif de crates 100 % Rust :
 
 - **CLI & Configuration** : `clap` (v4 derive), `serde`, `serde_json`, `toml`, `serde_yaml_ng`, `thiserror`, `chrono` (avec `serde`)
 - **Parcours & Correspondance** : `walkdir`, `globset`, `regex`
 - **Compression & Intégrité** : `flate2` (moteur pure-Rust `miniz_oxide` par défaut), `lz4_flex`, `brotli`, `zip` (`default-features = false`, `deflate` pure-Rust), `sha2`, ainsi que la bibliothèque standard Rust `std::fs::FileTimes` (`File::set_times`)
+- **Transport S3 & SigV4** : `ureq` v3 (`default-features = false`, `rustls-no-provider`, `rustls-webpki-roots`), `rustls` v0.23 (`default-features = false`, `std`, `logging`, `tls12`), `rustls-rustcrypto` (`CryptoProvider` TLS 100 % Rust), `hmac`, `base64`
 - **Démon & Intégration OS** : `notify`, `ctrlc`, ainsi que `#[cfg(unix)] libc` et l'API standard Windows `OpenOptionsExt::share_mode(0)`.
 
 Cette pile compile proprement sur l'ensemble des 9 cibles de distribution : `x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-gnu`, `aarch64-unknown-linux-musl`, `armv7-unknown-linux-gnueabihf`, `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc`, `aarch64-apple-darwin` et `x86_64-apple-darwin`.
@@ -95,6 +96,7 @@ Champs de niveau supérieur de `Config` (`src/config.rs`) :
 | `audit` | `AuditConfig` | Défaut `AuditConfig` | Journalisation structurée JSONL (`log_path: Option<PathBuf>`, `jsonl: bool` par défaut `true`). |
 | `audit_log` | `Option<PathBuf>` | `None` | Raccourci racine pour le chemin du journal JSONL (résolu avec `audit.log_path` via `Config::effective_audit_log()`). |
 | `global_trash_dir` | `Option<PathBuf>` | `None` | Répertoire de quarantaine par défaut lorsqu'une règle utilise `ActionStep::Trash` sans `trash_dir` local. |
+| `s3` | `Option<S3Config>` | `None` | Paramètres S3 / compatibles S3 par défaut résolus via `Config::effective_s3(rule)` lorsqu'une règle utilise `ActionStep::UploadS3` sans bloc `s3` local. |
 | `rules` | `Vec<RuleConfig>` | **Obligatoire (non vide)** | Liste ordonnée de règles indépendantes de rétention et de cycle de vie. |
 
 ### 2.2 `RuleConfig`, `DaemonConfig` et énumérations
@@ -140,6 +142,7 @@ Toutes les énumérations sont sérialisées en `snake_case` par défaut tout en
 | `compress_overwrite` | `bool` | `false` | Autorise l'écrasement d'une archive compressée existante. |
 | `copy_truncate_to` | `Option<PathBuf>` | `None` | Répertoire d'archive cible pour `ActionStep::CopyTruncate` (repli sur `move_to` si absent). |
 | `rename_template` | `Option<String>` | `None` | Modèle `strftime`/nom de fichier optionnel pour `ActionStep::RenameByDate`. |
+| `s3` | `Option<S3Config>` | `None` | Surcharge optionnelle de destination d'archivage S3 propre à la règle (repli sur `[s3]` global si absent). |
 
 #### `BackupGuardConfig`
 
@@ -179,8 +182,31 @@ Toutes les énumérations sont sérialisées en `snake_case` par défaut tout en
 
 #### `ActionStep` & `CompressionFormat`
 
-- `ActionStep` : `rename_by_date` (`RenameByDate`), `compress` (`Compress`), `move` (`Move`), `copy_truncate` (`CopyTruncate`), `trash` (`Trash`), `delete` (`Delete`). Les paramètres associés (`move_to`, `move_date_subdir`, `move_overwrite`, `trash_dir`, `compression`, `compression_level`, `compress_remove_source`, `compress_overwrite`, `copy_truncate_to`, `rename_template`) résident directement sur `RuleConfig`.
+- `ActionStep` : `rename_by_date` (`RenameByDate`), `compress` (`Compress`), `move` (`Move`), `copy_truncate` (`CopyTruncate`), `upload_s3` (`UploadS3`, non terminale), `trash` (`Trash`, terminale), `delete` (`Delete`, terminale). Les paramètres associés (`move_to`, `move_date_subdir`, `move_overwrite`, `trash_dir`, `compression`, `compression_level`, `compress_remove_source`, `compress_overwrite`, `copy_truncate_to`, `rename_template`, `s3`) résident directement sur `RuleConfig`.
 - `CompressionFormat` : `gzip` (`Gzip`, défaut), `lz4` (`Lz4`), `brotli` (`Brotli`), `zip` (`Zip`).
+
+#### `S3Config` & `S3VerifyMode`
+
+Les identifiants sont lus exclusivement depuis des variables d'environnement ; aucun champ de clé d'accès ou secrète en clair n'existe dans `S3Config`.
+
+| Champ | Type Rust | Défaut | Description |
+| :--- | :--- | :--- | :--- |
+| `bucket` | `String` | **Obligatoire** | Nom du bucket S3 cible (non vide ; sans `/`, `\`, `..`, espace ni caractère de contrôle). |
+| `region` | `String` | **Obligatoire** | Région de signature AWS ou compatible S3 (ex. `"eu-west-3"`, `"us-east-1"`). |
+| `endpoint` | `Option<String>` | `None` | URL personnalisée optionnelle (ex. `"https://minio.internal:9000"`). Exige `https://` sauf `allow_insecure_http = true` ; interdit identifiants/requête/fragment. |
+| `prefix` | `Option<String>` | `None` | Préfixe de clé optionnel ajouté devant les objets téléversés (sans `..` ni caractères de contrôle). |
+| `key_date_subdir` | `Option<String>` | `None` | Segment de date `chrono` `strftime` validé ajouté après `prefix` (ex. `"%Y/%m/%d"`). |
+| `force_path_style` | `bool` | `false` | Active l'adressage par chemin (`<endpoint>/<bucket>/<key>`) pour MinIO, Ceph RGW ou passerelles locales. |
+| `allow_insecure_http` | `bool` | `false` | Option explicite autorisant `http://` en clair pour un endpoint personnalisé (`false` par défaut impose TLS). |
+| `overwrite` | `bool` | `false` | Autorise l'écrasement d'une clé distante existante (`false` effectue un `HeadObject` préalable et échoue en sûreté sur `200 OK`). |
+| `storage_class` | `Option<String>` | `None` | En-tête `x-amz-storage-class` optionnel (ex. `"STANDARD_IA"`, `"GLACIER"`). |
+| `verify_mode` | `S3VerifyMode` | `ChecksumSha256` | `checksum_sha256` (`ChecksumSha256`, défaut : `HeadObject` `x-amz-checksum-sha256` + `Content-Length`) \| `readback_sha256` (`ReadbackSha256` : relecture en flux `GetObject` SHA-256). |
+| `access_key_env` | `String` | `"AWS_ACCESS_KEY_ID"` | Nom de la variable d'environnement fournissant l'identifiant de clé S3. |
+| `secret_key_env` | `String` | `"AWS_SECRET_ACCESS_KEY"` | Nom de la variable d'environnement fournissant la clé secrète S3. |
+| `session_token_env` | `Option<String>` | `Some("AWS_SESSION_TOKEN")` | Variable d'environnement optionnelle fournissant un jeton temporaire (`x-amz-security-token`). |
+| `timeout` | `Duration` | `"60s"` | Délai maximal par requête HTTP/TLS (`> 0`). |
+| `max_retries` | `u32` | `3` | Budget borné de tentatives sur erreurs transitoires `5xx` ou réseau (ne relance jamais `4xx` ni `IntegrityMismatch`). |
+| `multipart_part_size` | `u64` | `"16MiB"` | Seuil et taille de partie multipart bornés dans `[5 MiB, 5 GiB]`. |
 
 #### `DaemonConfig` & `DaemonMode`
 
@@ -246,11 +272,13 @@ Invariants d'analyse : arithmétique vérifiée contre le dépassement de `u64::
 | `INV-CFG-05` | Toutes les chaînes de `include_globs` et `exclude_globs` DOIVENT compiler dans `globset::Glob`. | `InvalidGlob` |
 | `INV-CFG-06` | `TimeBasis::FilenameDate` exige SIMULTANÉMENT `filename_date_regex` et un `filename_date_format` non vide sans `Item::Error` dans `StrftimeItems`. De même, `move_date_subdir` (si `Some`) DOIT posséder des `StrftimeItems` valides. | `ConfigValidation` |
 | `INV-CFG-07` | Si `max_files` vaut `Some(m)`, la condition `m >= backup_guard.min_keep_files` DOIT être satisfaite. Si `min_file_size` et `max_file_size` sont tous deux `Some`, `min_file_size <= max_file_size` DOIT être vérifié. | `ConfigValidation` |
-| `INV-CFG-08` | `ActionStep::Move` requiert `rule.move_to = Some(...)` ; `ActionStep::Trash` requiert `rule.trash_dir = Some(...)` ou `config.global_trash_dir = Some(...)` ; `ActionStep::CopyTruncate` requiert `rule.copy_truncate_to = Some(...)` ou `rule.move_to = Some(...)`. | `ConfigValidation` |
+| `INV-CFG-08` | `ActionStep::Move` requiert `rule.move_to = Some(...)` ; `ActionStep::Trash` requiert `rule.trash_dir = Some(...)` ou `config.global_trash_dir = Some(...)` ; `ActionStep::CopyTruncate` requiert `rule.copy_truncate_to = Some(...)` ou `rule.move_to = Some(...)` ; `ActionStep::UploadS3` requiert `rule.s3 = Some(...)` ou `config.s3 = Some(...)`. | `ConfigValidation` |
 | `INV-CFG-09` | **Garde d'auto-inclusion** : Si `rule.recursive == true` et que `move_to`, `copy_truncate_to` ou le `trash_dir` effectif égale lexicalement/canoniquement `rule.path` ou réside à l'intérieur de `rule.path`, la configuration est rejetée SAUF si `exclude_globs` ou `exclude_regex` exclut strictement le répertoire cible et ses descendants. | `ConfigValidation` |
-| `INV-CFG-10` | **Garde de terminaison du pipeline** : Les actions terminales (`Delete`, `Trash`) NE DOIVENT être suivies d'aucune autre `ActionStep` dans `rule.actions`. | `ConfigValidation` |
+| `INV-CFG-10` | **Garde de terminaison du pipeline** : Les actions terminales (`Delete`, `Trash`) NE DOIVENT être suivies d'aucune autre `ActionStep` dans `rule.actions`. L'étape non terminale `UploadS3` peut précéder `Delete`, `Trash` ou `Move`. | `ConfigValidation` |
 | `INV-CFG-11` | `pre_delete_hook` (lorsqu'il vaut `Some`) DOIT avoir un `command` non vide et `timeout > 0`. | `ConfigValidation` |
 | `INV-CFG-12` | `daemon.interval > 0` ; toute étape `CopyTruncate` requiert une activation explicite (`actions = ["copy_truncate"]`) et émet un avertissement explicite de validation concernant la fenêtre de concurrence écriture/troncature. | `ConfigValidation` |
+| `INV-CFG-13` | **Garde transport et clés S3 (`validate_s3_config`)** : `s3.bucket` et `s3.region` DOIVENT être valides et non vides ; un `endpoint` personnalisé DOIT utiliser `https://` sauf `allow_insecure_http = true` (et proscrire `@`/`?`/`#`/espaces) ; `prefix` interdit `..` et caractères de contrôle ; `key_date_subdir` DOIT contenir des `StrftimeItems` valides ; `timeout > 0` ; `multipart_part_size` DOIT être dans `[5 MiB, 5 GiB]`. | `ConfigValidation` |
+| `INV-CFG-14` | **Hygiène des secrets S3** : `access_key_env`, `secret_key_env` et `session_token_env` (si présent) DOIVENT être des noms POSIX valides (`[A-Za-z_][A-Za-z0-9_]*`), garantissant zéro identifiant en clair dans les fichiers TOML/YAML. | `ConfigValidation` |
 
 ### 2.6 Exemples canoniques TOML & YAML
 
@@ -729,11 +757,31 @@ Conçu strictement sur **activation explicite** (*opt-in*) pour les journaux act
 
 **Compromis explicite et avertissement** : Un écrivain tiers non coopératif peut écrire des octets entre la fin de lecture de la copie et `set_len(0)`, ces octets intermédiaires étant perdus à la troncature. FileCleaner réduit cette fenêtre en achevant compression et staging *avant* la troncature, et émet un avertissement explicite lors de `validate`.
 
-#### 7.2.5 `Trash` (`trash_dir` / `global_trash_dir`)
+#### 7.2.5 `UploadS3` (`s3` / `[s3]` global, SigV4 pure-Rust et vérification SHA-256 à échec sécurisé)
+
+Transfère en flux le `WorkingTarget` actif (en privilégiant la sortie produite par une étape préalable `Compress`, `CopyTruncate` ou `RenameByDate`) vers S3 ou une passerelle compatible S3 (AWS S3, MinIO, Ceph RGW, Cloudflare R2) via `ureq` v3 + `rustls` + `rustls-rustcrypto` (`max_redirects(0)`, TLS imposé sauf `allow_insecure_http = true`) et AWS Signature Version 4 (`AWS4-HMAC-SHA256`) :
+
+1. **Projection Dry-Run sans E/S** : Lorsque `effective_dry_run == true`, projette l'URI déterministe `s3://<bucket>/<key>` sans lire les identifiants, ni hacher le fichier, ni ouvrir de connexion réseau.
+2. **Lecture protégée TOCTOU et SHA-256 local** : Ouvre le fichier via `open_regular_nofollow_read` (`O_NOFOLLOW` / `FILE_FLAG_OPEN_REPARSE_POINT`) et calcule l'empreinte locale SHA-256 $H_{\text{local}}$ ainsi que la taille exacte $L_{\text{local}}$ directement sur le descripteur épinglé.
+3. **Contrôle préalable anti-écrasement** : Lorsque `s3.overwrite == false`, envoie une requête `HeadObject` signée et interrompt avec `FileCleanerError::S3Upload` si l'objet existe déjà (`200 OK`).
+4. **Téléversement en flux mono-partie ou multipart** :
+   - Les fichiers vérifiant $L_{\text{local}} \le \text{multipart\_part\_size}$ sont envoyés par `PutObject` avec `x-amz-checksum-sha256` (base64) et `x-amz-content-sha256`.
+   - Les fichiers plus volumineux sont découpés en flux (`CreateMultipartUpload` $\rightarrow$ `UploadPart` avec `x-amz-checksum-sha256` par partie $\rightarrow$ `CompleteMultipartUpload` avec contrôle d'erreur XML `<Error>` sous HTTP 200). En cas d'échec, FileCleaner appelle `AbortMultipartUpload` pour éviter tout fragment orphelin.
+5. **Invariant de vérification distante avant suppression locale** : Avant que `UploadS3` ne retourne un succès (et donc avant toute étape `Delete`, `Trash` ou `Move`), FileCleaner vérifie l'intégrité distante selon `s3.verify_mode` :
+   - `ChecksumSha256` (défaut) : Exécute `HeadObject` avec `x-amz-checksum-mode: ENABLED`, imposant `Content-Length` $= L_{\text{local}}$ et un en-tête `x-amz-checksum-sha256` égal à l'empreinte base64 mono-partie ou composite multipart S3 `<base64(SHA256(concat(part_sha256_raw)))>-<N>`.
+   - `ReadbackSha256` (opt-in pour passerelles anciennes) : Relit `GetObject` en flux à mémoire constante dans un calculateur `Sha256` et exige l'égalité exacte d'empreinte et de taille.
+
+$$
+\text{LocalDeleteAllowed}(f) \iff \text{UploadOk}(f) \land H_{\text{local}}(f) = H_{\text{remote}}(f) \land L_{\text{local}}(f) = L_{\text{remote}}(f)
+$$
+
+Toute panne réseau, absence d'en-tête de somme de contrôle, collision d'écrasement ou divergence d'empreinte interrompt immédiatement le pipeline avec `FileCleanerError::S3Upload` ou `FileCleanerError::IntegrityMismatch` (code `1`), en préservant le fichier local intact à 100 %. Comme `UploadS3` seul ne supprime aucun fichier local, une règle configurée avec `actions = ["upload_s3"]` conserve le comptage local inchangé (`RuleOutcome::Constrained` si un plafond reste dépassé).
+
+#### 7.2.6 `Trash` (`trash_dir` / `global_trash_dir`)
 
 Déplace `WorkingTarget` vers `rule.trash_dir` (avec repli sur `config.global_trash_dir`). En cas de collision dans la corbeille, ajoute un suffixe horodaté/séquentiel pour prévenir tout écrasement. Les traversées inter-FS respectent le protocole vérifié SHA-256 de la section 7.2.3.
 
-#### 7.2.6 `Delete`
+#### 7.2.7 `Delete`
 
 Supprime définitivement le fichier via `std::fs::remove_file(&working_path)`. Termine le pipeline de cet élément.
 
@@ -825,7 +873,7 @@ Options globales acceptées avant les sous-commandes : `-c, --config <PATH>`, `-
 | `filecleaner plan` | Plan d'exécution strictement en lecture seule (force `dry_run = true`). Prend en charge les mêmes options config et ad-hoc que `run`. | **Jamais** |
 | `filecleaner check-in-use <PATH...>` | Exécute la matrice multi-sondes sur un ou plusieurs fichiers. Options : `--idle-age <DUR>`, `--stability <DUR>`, `--sidecar-ext <EXT>...`, `--no-flock`, `--no-proc-fd`, `--no-windows-share`, `--json`. | **Jamais** |
 | `filecleaner validate [PATH]` | Analyse la configuration (positionnel `<PATH>` ou `-c/--config <PATH>`), les unités, les regex/globs et tous les invariants `INV-CFG-*`. Options : `--json`. | **Jamais** |
-| `filecleaner init` | Génère un modèle annoté (`-o/--output <PATH>`, `--profile backups\|logs\|spool`, `--format toml\|yaml`, `--force`) avec réglages sûrs (`dry_run = true`, `min_keep_files = 3`). | Crée uniquement le fichier config |
+| `filecleaner init` | Génère un modèle annoté (`-o/--output <PATH>`, `--profile backups\|logs\|spool\|dba-postgres`, `--format toml\|yaml`, `--force`) avec réglages sûrs (`dry_run = true`, `min_keep_files = 3` ou planchers DBA WAL/sauvegardes de base). | Crée uniquement le fichier config |
 | `filecleaner daemon run` | Lance le démon au premier plan (`--mode interval\|notify\|hybrid`, `--max-sweeps <N>`, `--fail-on-freeze`, `--strict-constraints`, `--dry-run`). | Selon mode de passe |
 | `filecleaner daemon status` | Consulte la vivacité du `pid_file` et les métriques de `state_file` (`--pid-file <PATH>`, `--state-file <PATH>`, `--json`). | **Jamais** |
 | `filecleaner daemon stop` | Crée `stop_file` (et envoie `SIGTERM` sous Unix), attend la fin du PID jusqu'à `--timeout <DUR>` (`10s` par défaut, `--pid-file <PATH>`, `--stop-file <PATH>`). | Écrit/nettoie `stop_file` |
@@ -858,8 +906,9 @@ Chaque ligne d'audit est un objet JSON UTF-8 autonome terminé par `\n` et vidé
 | `decision` | `Option<String>` | `keep_floor` \| `keep_retention` \| `skip_in_use` \| `skip_hook` \| `skip_ts_parse` \| `freeze` \| `would_act` \| `acted` \| `aborted` \| `error` |
 | `in_use_reasons` | `Option<Vec<String>>` | Sondes actives déclenchées en cas de fichier occupé |
 | `actions` | `Vec<String>` | Étapes du pipeline (`RenameByDate`, `Compress(Gzip)`, `Move`, etc.) |
-| `dest_path` | `Option<String>` | Chemin résultant pour `RenameByDate`/`Compress`/`Move`/`Trash` |
-| `sha256` | `Option<String>` | Empreinte SHA-256 hexadécimale vérifiée lors de `Move`/`CopyTruncate` inter-FS |
+| `dest_path` | `Option<String>` | Chemin résultant pour `RenameByDate`/`Compress`/`Move`/`Trash`, ou URI `s3://...` projetée/vérifiée pour `UploadS3` |
+| `sha256` | `Option<String>` | Empreinte SHA-256 hexadécimale vérifiée lors de `Move`/`CopyTruncate` inter-FS ou `UploadS3` |
+| `details` | `Option<serde_json::Value>` | Métadonnées d'action structurées optionnelles (pour `UploadS3` : `s3_uri`, `etag`, `verify_mode`, `parts_uploaded`, `verified_size`) |
 | `dry_run` | `bool` | Indique si le mode simulation était actif |
 | `duration_ms` | `u64` | Durée de l'opération en millisecondes |
 | `error` | `Option<String>` | Diagnostic structuré en cas d'erreur, de gel ou de règle contrainte |
@@ -875,7 +924,7 @@ Exemples d'enregistrements JSONL :
 
 #### Taxonomie d'erreurs (`thiserror`, `src/error.rs`)
 
-Variantes de `FileCleanerError` : `ConfigParse { path, reason }`, `ConfigFormat { path, extension }`, `ConfigValidation(String)`, `InvalidGlob { pattern, source }`, `InvalidRegex { pattern, source }`, `InvalidDuration(String)`, `InvalidByteSize(String)`, `Io { path, source }`, `Serialization(String)`, `HookFailed { rule, command, exit_code, stderr }`, `HookTimedOut { rule, command, timeout_secs }`, `InUseProbe(String)`, `Compression { path, reason }`, `IntegrityMismatch { path, expected, actual }`, `BackupGuardViolation { rule, reason }`, `Daemon(String)` (plus d'éventuelles variantes diagnostiques d'horodatage en Vague 2 `TimestampParse` / `TimestampUnsupported`).
+Variantes de `FileCleanerError` : `ConfigParse { path, reason }`, `ConfigFormat { path, extension }`, `ConfigValidation(String)`, `InvalidGlob { pattern, source }`, `InvalidRegex { pattern, source }`, `InvalidDuration(String)`, `InvalidByteSize(String)`, `Io { path, source }`, `Serialization(String)`, `HookFailed { rule, command, exit_code, stderr }`, `HookTimedOut { rule, command, timeout_secs }`, `InUseProbe(String)`, `Compression { path, reason }`, `S3Upload { path, uri, reason }`, `IntegrityMismatch { path, expected, actual }`, `BackupGuardViolation { rule, reason }`, `Daemon(String)` (plus d'éventuelles variantes diagnostiques d'horodatage en Vague 2 `TimestampParse` / `TimestampUnsupported`).
 
 #### Matrice des menaces et mesures d'atténuation
 
@@ -887,3 +936,4 @@ Variantes de `FileCleanerError` : `ConfigParse { path, reason }`, `ConfigFormat 
 | **Corruption TOCTOU en écriture** | Matrice 6 couches (`min_idle_age` + `stability_window` en 2 points + sondes OS non intrusives) + staging atomique `0o600` `.fc-tmp` + vérification SHA-256 après copie. |
 | **Leurre de sauvegarde vide (0 octet)** | Le seuil $B_{\min}$ de $\mathcal{F}_{\text{valid}}$ exclut les ébauches corrompues avant le calcul de $P_{\text{floor}}$ et $t_{\max}$. |
 | **Blocage infini et saturation de hook** | Expiration stricte `hook.timeout` appliquée par `SIGKILL` sur le groupe de processus Unix + `child.kill()`/`wait()`, sortie standard `Stdio::null()`, stderr plafonné à `64 KiB` et vidange bornée par `mpsc`. |
+| **Fuite de secrets S3 & suppression non vérifiée** | Variables d'environnement uniquement (`INV-CFG-14`) encapsulées dans `RedactedSecret` (jamais journalisées), HTTPS par défaut (`allow_insecure_http = false`), `max_redirects(0)` contre le SSRF/transfert d'en-têtes, et vérification SHA-256 à échec sécurisé avant tout `Delete`/`Trash`/`Move` local. |
