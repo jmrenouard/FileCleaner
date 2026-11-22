@@ -667,4 +667,67 @@ fn injectable_engine_and_pipeline_handle_upload_only_constrained_and_failure_det
     assert_eq!(dry_up.calls.load(Ordering::SeqCst), 0);
     assert_eq!(dry_rep.remote_uri.as_deref(), Some("s3://inject-bkt/a.wal"));
     assert!(dry_rep.s3_receipt.is_none());
+
+    // Compress (compress_remove_source = false) -> UploadS3 uploads the `.gz` archive, not raw source.
+    let keep_src_file = dir.join("keep_me.sql");
+    write_stamped(&keep_src_file, b"SELECT 1;\n", now.timestamp() - 300);
+    let mut keep_rule = rule.clone();
+    keep_rule.actions = vec![ActionStep::Compress, ActionStep::UploadS3];
+    keep_rule.compress_remove_source = false;
+    let keep_up = StubUploader {
+        fail: false,
+        calls: AtomicUsize::new(0),
+    };
+    let keep_rep = ActionExecutor::execute_pipeline_with_s3(
+        WorkingTarget {
+            path: keep_src_file.clone(),
+            size_bytes: 10,
+            mtime: now,
+            atime: None,
+        },
+        &keep_rule,
+        None,
+        None,
+        Some(&keep_up),
+        false,
+    )
+    .unwrap();
+    assert!(keep_src_file.exists());
+    assert_eq!(
+        keep_rep.remote_uri.as_deref(),
+        Some("s3://inject-bkt/keep_me.sql.gz")
+    );
+    assert!(keep_rep.s3_receipt.unwrap().verified_size > 0);
+
+    // CopyTruncate -> UploadS3 uploads the rotated archive rather than the 0-byte truncated live file.
+    let ct_dir = tmp.path().join("ct_rotated");
+    let live_log = dir.join("service.log");
+    write_stamped(&live_log, b"important-log-payload", now.timestamp() - 300);
+    let mut ct_rule = rule;
+    ct_rule.actions = vec![ActionStep::CopyTruncate, ActionStep::UploadS3];
+    ct_rule.copy_truncate_to = Some(ct_dir);
+    let ct_up = StubUploader {
+        fail: false,
+        calls: AtomicUsize::new(0),
+    };
+    let ct_rep = ActionExecutor::execute_pipeline_with_s3(
+        WorkingTarget {
+            path: live_log.clone(),
+            size_bytes: 21,
+            mtime: now,
+            atime: None,
+        },
+        &ct_rule,
+        None,
+        None,
+        Some(&ct_up),
+        false,
+    )
+    .unwrap();
+    assert_eq!(fs::metadata(&live_log).unwrap().len(), 0);
+    assert_eq!(
+        ct_rep.remote_uri.as_deref(),
+        Some("s3://inject-bkt/service_20261122_120000.log")
+    );
+    assert_eq!(ct_rep.s3_receipt.unwrap().verified_size, 21);
 }

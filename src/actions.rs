@@ -306,7 +306,8 @@ impl ActionExecutor {
                             rule.name
                         ))
                     })?;
-                    let file_name = extract_file_name(&target.path)?
+                    let upload_path = final_path.as_deref().unwrap_or(&target.path).to_path_buf();
+                    let file_name = extract_file_name(&upload_path)?
                         .to_string_lossy()
                         .into_owned();
                     let key = build_object_key(
@@ -322,12 +323,12 @@ impl ActionExecutor {
                         remote_uri = Some(projected_uri);
                         steps_executed.push("UploadS3".to_string());
                     } else {
-                        reject_symlink_if_disallowed(&target.path, rule.follow_symlinks)?;
-                        let (src_file, _) = open_regular_nofollow_read(&target.path)?;
+                        reject_symlink_if_disallowed(&upload_path, rule.follow_symlinks)?;
+                        let (src_file, _) = open_regular_nofollow_read(&upload_path)?;
                         let (local_sha256, local_len) =
-                            compute_handle_sha256(src_file, &target.path)?;
+                            compute_handle_sha256(src_file, &upload_path)?;
                         let req = S3UploadRequest {
-                            local_path: target.path.clone(),
+                            local_path: upload_path,
                             key,
                             content_length: local_len,
                             sha256_hex: local_sha256,
