@@ -770,4 +770,56 @@ FILECLEANER_PG_MIN_KEEP_WAL = "000000010000000000000003"
             .repeat(64)
             .as_bytes()
     );
+
+    // 5. Verify verify_pg_wal_safe.sh boundary-file, replica veto (42), .history veto (42), and malformed marker fail-closed (1) on Unix.
+    #[cfg(unix)]
+    {
+        let repo_hook =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/hooks/verify_pg_wal_safe.sh");
+        let seg3 = wal_dir.join("000000010000000000000003");
+        let marker = tmp.path().join(".pitr_min_keep_wal");
+        fs::write(&marker, "000000010000000000000004\n").unwrap();
+
+        // Older than base boundary + older than replica boundary -> exit 0.
+        let st_ok = std::process::Command::new("bash")
+            .arg(&repo_hook)
+            .env("FILECLEANER_PATH", &seg3)
+            .env("FILECLEANER_NAME", "000000010000000000000003")
+            .env("FILECLEANER_PG_MIN_KEEP_WAL_FILE", &marker)
+            .env("FILECLEANER_PG_REPLICA_WAL", "000000010000000000000004")
+            .status()
+            .unwrap();
+        assert_eq!(st_ok.code(), Some(0));
+
+        // Equal to lagging standby replica boundary -> veto exit 42.
+        let st_rep = std::process::Command::new("bash")
+            .arg(&repo_hook)
+            .env("FILECLEANER_PATH", &seg3)
+            .env("FILECLEANER_NAME", "000000010000000000000003")
+            .env("FILECLEANER_PG_MIN_KEEP_WAL_FILE", &marker)
+            .env("FILECLEANER_PG_REPLICA_WAL", "000000010000000000000003")
+            .status()
+            .unwrap();
+        assert_eq!(st_rep.code(), Some(42));
+
+        // Timeline .history file -> veto exit 42.
+        let st_hist = std::process::Command::new("bash")
+            .arg(&repo_hook)
+            .env("FILECLEANER_PATH", &history_file)
+            .env("FILECLEANER_NAME", "00000002.history")
+            .status()
+            .unwrap();
+        assert_eq!(st_hist.code(), Some(42));
+
+        // Malformed boundary marker -> fail-closed operational error exit 1.
+        fs::write(&marker, "corrupt-not-hex\n").unwrap();
+        let st_bad = std::process::Command::new("bash")
+            .arg(&repo_hook)
+            .env("FILECLEANER_PATH", &seg3)
+            .env("FILECLEANER_NAME", "000000010000000000000003")
+            .env("FILECLEANER_PG_MIN_KEEP_WAL_FILE", &marker)
+            .status()
+            .unwrap();
+        assert_eq!(st_bad.code(), Some(1));
+    }
 }

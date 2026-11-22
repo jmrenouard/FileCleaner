@@ -22,6 +22,7 @@
 #   1  - Operational error: missing candidate or unreadable/malformed boundary marker (fail-closed).
 
 set -euo pipefail
+export LC_ALL=C
 
 is_valid_wal_name() {
     [[ "$1" =~ ^[0-9A-F]{24}$ ]]
