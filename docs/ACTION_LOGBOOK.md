@@ -11,11 +11,23 @@
 
 | Action ID | Date / Time (ISO) | Issue / Branch | Status | Request, Ongoing Changes & Expected Results |
 | :--- | :--- | :--- | :--- | :--- |
-| _None_ | — | — | — | All tracked tasks are completed. |
+| *(none)* | — | — | — | All scheduled actions completed. |
 
 ---
 
 ## 2. Completed Actions (`COMPLETED`)
+
+### ACT-014 — Add Docker/MinIO E2E Verification Harness Against PostgreSQL (`multi-db-docker-env`) (`Issue #32`)
+
+- **Date / Time (ISO)**: `2026-11-22T03:07:00Z`
+- **Issue / Branch**: `#32` (`test/issue-32-docker-e2e-minio-lab`)
+- **Request**: Build a reproducible Docker E2E harness (`scripts/e2e-dba-s3-lab.sh`) and Rust integration suite (`tests/e2e_dba_s3_docker_test.rs`) validating all 6 live DBA PostgreSQL 17 (`multi-db-docker-env`-compatible) + pinned MinIO S3 archival scenarios end-to-end.
+- **Changes**:
+  - [`scripts/e2e-dba-s3-lab.sh`](../scripts/e2e-dba-s3-lab.sh): Added self-cleaning Bash E2E harness provisioning an isolated Docker network, PostgreSQL 17 (`postgres:17-bookworm`, `wal_level=replica`, `archive_mode=on`), and pinned MinIO (`pgsty/minio:RELEASE.2026-08-04T00-00-00Z`) exercising all 6 DBA scenarios (real 16 MiB WAL + `pg_dump` generation, active `flock`/`.tmp` writer `check-in-use` exit `10` + `skip_in_use`, live `compress -> upload_s3 (x-amz-checksum-sha256) -> delete`, MinIO outage + corrupt-checksum fault injection exit `1` with 100% local retention, 0-byte stub `--fail-on-freeze` exit `3`, and MinIO object download + `audit.jsonl` SHA-256 verification + full 253-row PostgreSQL restore).
+  - [`tests/e2e_dba_s3_docker_test.rs`](../tests/e2e_dba_s3_docker_test.rs): Added always-on CI-safe validator verifying Bash headers/traps/syntax (`bash -n` on Unix), security hygiene (no `AKIA`, no `:latest`), and `Config::validate()` on the embedded TOML template, plus `#[ignore]` live Docker E2E runner `live_docker_e2e_postgres_minio_six_scenarios`.
+  - [`docs/RCA_REGISTER.md`](RCA_REGISTER.md): Logged `RCA-009` documenting Docker Hub `minio/minio` pull denial, WSL2 `-p` loopback forwarding, PG17 `initdb` TCP readiness, and WSL2 `/tmp` vs `/var/tmp` bind-mount namespace isolation.
+- **Result**:
+  - Verified in WSL2 (`CARGO_TARGET_DIR=/tmp/filecleaner-target`): `cargo fmt --all -- --check` PASS, 3-target `cargo clippy --all-targets -- -D warnings` PASS (`0` warnings across Linux, `x86_64-pc-windows-gnu`, `aarch64-apple-darwin`), `cargo test --all-targets` PASS (`135/135` active: `69` unit + `66` integration across `11` suites, `1` ignored), live Docker E2E `cargo test --test e2e_dba_s3_docker_test -- --ignored --nocapture` PASS (`1/1` in `17.89s`, 6/6 scenarios including `48.00 MiB` real WAL archival and 253-row PG17 restore, zero leftover containers), and `cargo llvm-cov --all-targets --workspace --summary-only --fail-under-lines 90` PASS (`94.01%` line coverage / `92.08%` region coverage across `11,473` lines).
 
 ### ACT-013 — Add DBA PostgreSQL WAL and Backup Retention Profile to CLI `init` and Examples (`Issue #30`)
 

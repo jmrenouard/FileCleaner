@@ -157,6 +157,25 @@
 - **Result & Non-Regression Test**:
   - Re-verified in WSL2 (`fmt`, 3-target `clippy -D warnings`, `cargo test --all-targets` `124/124`, `cargo llvm-cov --fail-under-lines 90` `94.31%` across `9,098` lines) and pushed commit to trigger full Windows/macOS/Linux GitHub Actions re-run on `PR #21`.
 
+### RCA-009 — Live Docker E2E Harness Portability (`minio/minio` Pull Denial, WSL2 Loopback & `/tmp` Bind-Mount Isolation, and PG17 `initdb` Socket Race) (`Issue #32`)
+
+- **Date / Linked Action**: `2026-11-22` (`ACT-014` / Issue `#32`)
+- **Observed Symptom**:
+  - Executing the live 6-scenario Docker E2E harness (`scripts/e2e-dba-s3-lab.sh`) inside WSL2 Ubuntu-24.04 against Docker Desktop surfaced four environment-specific failures:
+    1. `docker pull minio/minio:RELEASE.2025-04-22T22-12-26Z` and `quay.io/minio/minio` failed with `pull access denied` / HTTP `401`.
+    2. Publishing MinIO with `-p 127.0.0.1:${MINIO_PORT}:9000` caused `urllib.error.URLError: timed out` from WSL2 loopback.
+    3. Probing `pg_isready -U postgres -d labdb` over the container Unix socket matched PostgreSQL 17's temporary `initdb` process right as it shut down (`FATAL: the database system is shutting down`).
+    4. Bind-mounting a `/tmp` `tmpfs` directory (`-v /tmp/...:/wal_archive`) wrote archived WAL files into `docker-desktop`'s isolated `/tmp` namespace rather than Ubuntu-24.04's `/tmp`, leaving `$WAL_DIR` empty on the host.
+- **Root Cause Analysis (5 Whys)**:
+  1. Upstream `minio/minio` tags were gated/removed from public anonymous Docker Hub/Quay pulls, whereas pinned public multi-arch `pgsty/minio:RELEASE.2026-08-04T00-00-00Z` remains anonymously pullable.
+  2. Docker Desktop WSL2 port forwarding binds reliably across WSL2 distros with `-p "${MINIO_PORT}:9000"`, whereas `-p 127.0.0.1:...` can bind only on the Windows loopback adapter.
+  3. The official `postgres:17-bookworm` entrypoint runs `initdb` with `listen_addresses=''` (Unix socket only), shuts down, and restarts with TCP listening on `5432`; only TCP `pg_isready -h 127.0.0.1 -p 5432` plus `SELECT 1` guarantees the post-`initdb` server is live.
+  4. In WSL2 Ubuntu-24.04, `/tmp` is a private per-distro `tmpfs` not shared with the `docker-desktop` mount namespace, whereas `/var/tmp` resides on the shared ext4 rootfs.
+- **Applied Change / Fix**:
+  - [`scripts/e2e-dba-s3-lab.sh`](../scripts/e2e-dba-s3-lab.sh): Pinned default `MINIO_IMAGE` to `pgsty/minio:RELEASE.2026-08-04T00-00-00Z`, published MinIO via `-p "${MINIO_PORT}:9000"` with fail-fast health checks, switched PostgreSQL readiness to TCP (`pg_isready -h 127.0.0.1 -p 5432` + `psql -h 127.0.0.1 -tAc "SELECT 1"`), added `chmod 0644` inside `archive_command` with container-side `touch -d`, and defaulted `TMP_ROOT` to `/var/tmp` (`FC_E2E_TMP_ROOT`).
+- **Result & Non-Regression Test**:
+  - Live ignored test `cargo test --test e2e_dba_s3_docker_test -- --ignored --nocapture` passed all 6 scenarios in `17.89s` (4+ real 16 MiB WAL segments archived via pure-Rust LZ4 + SigV4 + verified `x-amz-checksum-sha256` against MinIO, `check-in-use` exit `10` + `skip_in_use`, MinIO outage & corrupt-checksum fault injection exit `1` with 100% local retention, 0-byte stub `--fail-on-freeze` exit `3`, and MinIO download + SHA-256 `audit.jsonl` parity + full 253-row PostgreSQL 17 restore).
+
 ---
 
 ## 2. Technical Dead-Ends & Abandoned Leads (`IMP`)
