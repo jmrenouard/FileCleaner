@@ -17,6 +17,19 @@
 
 ## 2. Completed Actions (`COMPLETED`)
 
+### ACT-013 — Add DBA PostgreSQL WAL and Backup Retention Profile to CLI `init` and Examples (`Issue #30`)
+
+- **Date / Time (ISO)**: `2026-11-22T02:39:00Z`
+- **Issue / Branch**: `#30` (`feat/issue-30-dba-postgres-wal-profile`)
+- **Request**: Add the `--profile dba-postgres` starter template to `filecleaner init` (`src/cli.rs`), ship validated TOML/YAML production examples (`examples/dba-postgres-wal-s3.{toml,yaml}`) and a PITR/replica WAL safety pre-delete hook (`examples/hooks/verify_pg_wal_safe.sh`), and verify all DBA safety invariants with E2E tests.
+- **Changes**:
+  - [`src/cli.rs`](../src/cli.rs): Added `InitProfile::DbaPostgres` (`--profile dba-postgres`, TOML and YAML templates with `dry_run = true`, `pg-base-backups` and `pg-wal-archive` rules), unified `init_profile_label` for CLI/JSON output parity, and expanded `starter_templates_validate_for_every_profile_and_format`.
+  - [`examples/dba-postgres-wal-s3.toml`](../examples/dba-postgres-wal-s3.toml) & [`examples/dba-postgres-wal-s3.yaml`](../examples/dba-postgres-wal-s3.yaml): Added production DBA PostgreSQL base-backup and WAL archive-to-S3 examples (auto-validated by `tests/governance_and_docs_test.rs`).
+  - [`examples/hooks/verify_pg_wal_safe.sh`](../examples/hooks/verify_pg_wal_safe.sh): Added POSIX/Bash PITR base-backup and standby-replica WAL boundary safety hook (`exit 42` veto on non-WAL / held / protected segments, fail-closed `exit 1` on unreadable/malformed boundary markers).
+  - [`tests/product_workflows_e2e_test.rs`](../tests/product_workflows_e2e_test.rs): Added `howto_workflow_5_dba_postgres_wal_and_base_backups_s3_archival_and_pitr_guards` testing `init --profile dba-postgres`, `validate`, 0-byte stub `--fail-on-freeze` (`exit 3`), `.history`/`.partial`/`archive_status/*.ready` protection, hook `exit 42` veto, and verified S3 archival + LZ4 decompression.
+- **Result**:
+  - Verified in WSL2 (`CARGO_TARGET_DIR=/tmp/filecleaner-target`): `bash -n examples/hooks/verify_pg_wal_safe.sh` PASS, `cargo fmt --all -- --check` PASS, 3-target `cargo clippy --all-targets -- -D warnings` PASS (`0` warnings), `cargo test --all-targets` PASS (`134/134`: `69` unit + `65` integration across `10` suites), and `cargo llvm-cov --all-targets --workspace --summary-only --fail-under-lines 90` PASS (`94.01%` line coverage / `92.08%` region coverage across `11,473` lines; `cli.rs` `95.14%`).
+
 ### ACT-012 — Integrate Fail-Closed `UploadS3` Action into Pipeline, Engine, and Audit Log (`Issue #28`)
 
 - **Date / Time (ISO)**: `2026-11-22T02:28:00Z`

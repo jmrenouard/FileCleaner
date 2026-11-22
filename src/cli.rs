@@ -326,6 +326,17 @@ pub enum InitProfile {
     Backups,
     Logs,
     Spool,
+    #[value(name = "dba-postgres")]
+    DbaPostgres,
+}
+
+fn init_profile_label(profile: InitProfile) -> &'static str {
+    match profile {
+        InitProfile::Backups => "backups",
+        InitProfile::Logs => "logs",
+        InitProfile::Spool => "spool",
+        InitProfile::DbaPostgres => "dba-postgres",
+    }
 }
 
 /// Starter configuration format selector for `filecleaner init`.
@@ -666,7 +677,7 @@ fn run_init_cmd(args: InitArgs, json: bool, quiet: bool) -> i32 {
     if json {
         let payload = serde_json::json!({
             "created": output_path,
-            "profile": format!("{:?}", args.profile).to_ascii_lowercase(),
+            "profile": init_profile_label(args.profile),
             "format": match format {
                 InitFormat::Toml => "toml",
                 InitFormat::Yaml => "yaml",
@@ -682,11 +693,7 @@ fn run_init_cmd(args: InitArgs, json: bool, quiet: bool) -> i32 {
     } else if !quiet {
         println!(
             "initialized {} starter configuration at {} (dry_run = true)",
-            match args.profile {
-                InitProfile::Backups => "backups",
-                InitProfile::Logs => "logs",
-                InitProfile::Spool => "spool",
-            },
+            init_profile_label(args.profile),
             output_path.display()
         );
     }
@@ -1470,6 +1477,276 @@ rules:
 "#
             .to_string()
         }
+        (InitProfile::DbaPostgres, InitFormat::Toml) => {
+            r#"# FileCleaner Starter Configuration — DBA PostgreSQL Base Backups & WAL S3 Profile
+# Safety first: dry_run starts as `true`; review `filecleaner plan` before enabling live sweeps.
+# Export AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in the runtime environment (zero plaintext secrets).
+
+dry_run = true
+global_trash_dir = "/var/tmp/filecleaner-trash"
+
+[daemon]
+mode = "hybrid"
+interval = "5m"
+watch = true
+debounce = "2s"
+sweep_on_start = true
+pid_file = "/run/filecleaner/pg-dba.pid"
+state_file = "/run/filecleaner/pg-dba-state.json"
+stop_file = "/run/filecleaner/pg-dba.stop"
+
+[audit]
+log_path = "/var/log/filecleaner/pg-dba-audit.jsonl"
+jsonl = true
+
+[s3]
+bucket = "pg-pitr-archive"
+region = "eu-west-3"
+force_path_style = false
+allow_insecure_http = false
+overwrite = false
+verify_mode = "checksum_sha256"
+access_key_env = "AWS_ACCESS_KEY_ID"
+secret_key_env = "AWS_SECRET_ACCESS_KEY"
+session_token_env = "AWS_SESSION_TOKEN"
+timeout = "60s"
+max_retries = 3
+multipart_part_size = "16MiB"
+
+[[rules]]
+name = "pg-base-backups"
+path = "/var/backups/postgres/base"
+enabled = true
+recursive = true
+max_depth = 2
+follow_symlinks = false
+include_globs = ["*.sql", "*.sql.gz", "*.dump", "*.tar"]
+exclude_globs = ["pinned/**", "*.keep"]
+min_file_size = "1KiB"
+time_basis = "filename_date"
+filename_date_regex = 'pg_(\d{8}_\d{6})'
+filename_date_format = "%Y%m%d_%H%M%S"
+max_files = 14
+max_age = "30d"
+max_total_size = "200GiB"
+combine_mode = "any"
+eviction_order = "oldest_first"
+actions = ["compress", "upload_s3", "delete"]
+compression = "gzip"
+compress_remove_source = true
+compress_overwrite = false
+
+[rules.s3]
+bucket = "pg-pitr-archive"
+region = "eu-west-3"
+prefix = "postgres/base-backups"
+key_date_subdir = "%Y/%m"
+overwrite = false
+verify_mode = "checksum_sha256"
+
+[rules.backup_guard]
+enabled = true
+min_keep_files = 7
+min_valid_backup_bytes = "1MiB"
+require_newer_within = "36h"
+freeze_on_empty_valid = true
+
+[rules.in_use]
+enabled = true
+check_sidecar_locks = true
+sidecar_suffixes = [".lock", ".lck", ".part", ".tmp", ".writing"]
+check_os_locks = true
+check_proc_fd = true
+min_idle_age = "2m"
+stability_window = "5s"
+
+[[rules]]
+name = "pg-wal-archive"
+path = "/var/lib/postgresql/wal_archive"
+enabled = true
+recursive = false
+follow_symlinks = false
+include_regex = '^[0-9A-F]{24}$'
+exclude_globs = ["*.history", "*.partial", "*.ready", "*.done", "*.tmp", "archive_status/**"]
+min_file_size = "16MiB"
+time_basis = "modified"
+max_files = 64
+max_age = "7d"
+max_total_size = "100GiB"
+combine_mode = "any"
+eviction_order = "oldest_first"
+actions = ["compress", "upload_s3", "delete"]
+compression = "lz4"
+compress_remove_source = true
+compress_overwrite = false
+
+[rules.s3]
+bucket = "pg-pitr-archive"
+region = "eu-west-3"
+prefix = "postgres/wal"
+key_date_subdir = "%Y/%m/%d"
+overwrite = false
+verify_mode = "checksum_sha256"
+
+[rules.backup_guard]
+enabled = true
+min_keep_files = 16
+min_valid_backup_bytes = "16MiB"
+freeze_on_empty_valid = true
+
+[rules.in_use]
+enabled = true
+check_sidecar_locks = true
+check_os_locks = true
+check_proc_fd = true
+min_idle_age = "60s"
+stability_window = "3s"
+"#
+            .to_string()
+        }
+        (InitProfile::DbaPostgres, InitFormat::Yaml) => {
+            r#"# FileCleaner Starter Configuration — DBA PostgreSQL Base Backups & WAL S3 Profile
+# Safety first: dry_run starts as `true`; review `filecleaner plan` before enabling live sweeps.
+# Export AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in the runtime environment (zero plaintext secrets).
+
+dry_run: true
+global_trash_dir: /var/tmp/filecleaner-trash
+
+daemon:
+  mode: hybrid
+  interval: 5m
+  watch: true
+  debounce: 2s
+  sweep_on_start: true
+  pid_file: /run/filecleaner/pg-dba.pid
+  state_file: /run/filecleaner/pg-dba-state.json
+  stop_file: /run/filecleaner/pg-dba.stop
+
+audit:
+  log_path: /var/log/filecleaner/pg-dba-audit.jsonl
+  jsonl: true
+
+s3:
+  bucket: pg-pitr-archive
+  region: eu-west-3
+  force_path_style: false
+  allow_insecure_http: false
+  overwrite: false
+  verify_mode: checksum_sha256
+  access_key_env: AWS_ACCESS_KEY_ID
+  secret_key_env: AWS_SECRET_ACCESS_KEY
+  session_token_env: AWS_SESSION_TOKEN
+  timeout: 60s
+  max_retries: 3
+  multipart_part_size: 16MiB
+
+rules:
+  - name: pg-base-backups
+    path: /var/backups/postgres/base
+    enabled: true
+    recursive: true
+    max_depth: 2
+    follow_symlinks: false
+    include_globs:
+      - "*.sql"
+      - "*.sql.gz"
+      - "*.dump"
+      - "*.tar"
+    exclude_globs:
+      - "pinned/**"
+      - "*.keep"
+    min_file_size: 1KiB
+    time_basis: filename_date
+    filename_date_regex: 'pg_(\d{8}_\d{6})'
+    filename_date_format: "%Y%m%d_%H%M%S"
+    max_files: 14
+    max_age: 30d
+    max_total_size: 200GiB
+    combine_mode: any
+    eviction_order: oldest_first
+    actions:
+      - compress
+      - upload_s3
+      - delete
+    compression: gzip
+    compress_remove_source: true
+    compress_overwrite: false
+    s3:
+      bucket: pg-pitr-archive
+      region: eu-west-3
+      prefix: postgres/base-backups
+      key_date_subdir: "%Y/%m"
+      overwrite: false
+      verify_mode: checksum_sha256
+    backup_guard:
+      enabled: true
+      min_keep_files: 7
+      min_valid_backup_bytes: 1MiB
+      require_newer_within: 36h
+      freeze_on_empty_valid: true
+    in_use:
+      enabled: true
+      check_sidecar_locks: true
+      sidecar_suffixes:
+        - ".lock"
+        - ".lck"
+        - ".part"
+        - ".tmp"
+        - ".writing"
+      check_os_locks: true
+      check_proc_fd: true
+      min_idle_age: 2m
+      stability_window: 5s
+
+  - name: pg-wal-archive
+    path: /var/lib/postgresql/wal_archive
+    enabled: true
+    recursive: false
+    follow_symlinks: false
+    include_regex: '^[0-9A-F]{24}$'
+    exclude_globs:
+      - "*.history"
+      - "*.partial"
+      - "*.ready"
+      - "*.done"
+      - "*.tmp"
+      - "archive_status/**"
+    min_file_size: 16MiB
+    time_basis: modified
+    max_files: 64
+    max_age: 7d
+    max_total_size: 100GiB
+    combine_mode: any
+    eviction_order: oldest_first
+    actions:
+      - compress
+      - upload_s3
+      - delete
+    compression: lz4
+    compress_remove_source: true
+    compress_overwrite: false
+    s3:
+      bucket: pg-pitr-archive
+      region: eu-west-3
+      prefix: postgres/wal
+      key_date_subdir: "%Y/%m/%d"
+      overwrite: false
+      verify_mode: checksum_sha256
+    backup_guard:
+      enabled: true
+      min_keep_files: 16
+      min_valid_backup_bytes: 16MiB
+      freeze_on_empty_valid: true
+    in_use:
+      enabled: true
+      check_sidecar_locks: true
+      check_os_locks: true
+      check_proc_fd: true
+      min_idle_age: 60s
+      stability_window: 3s
+"#
+            .to_string()
+        }
     }
 }
 
@@ -1575,7 +1852,12 @@ mod tests {
 
     #[test]
     fn starter_templates_validate_for_every_profile_and_format() {
-        for profile in [InitProfile::Backups, InitProfile::Logs, InitProfile::Spool] {
+        for profile in [
+            InitProfile::Backups,
+            InitProfile::Logs,
+            InitProfile::Spool,
+            InitProfile::DbaPostgres,
+        ] {
             for format in [InitFormat::Toml, InitFormat::Yaml] {
                 let raw = render_starter_config(profile, format);
                 let path = match format {
