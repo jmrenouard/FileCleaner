@@ -12,7 +12,7 @@
 #   FC_E2E_BIN            Path to compiled `filecleaner` binary
 #   FC_E2E_PG_IMAGE       PostgreSQL image (default: postgres:17-bookworm)
 #   FC_E2E_MINIO_IMAGE    MinIO image (default: pgsty/minio:RELEASE.2026-08-04T00-00-00Z)
-#   FC_E2E_PG_CONTAINER   Existing multi-db-docker-env container (optional; defaults to ephemeral PG17)
+#   FC_E2E_TMP_ROOT       Host temp root shared with Docker (default: /var/tmp)
 
 set -euo pipefail
 export LC_ALL=C
@@ -24,7 +24,7 @@ FC_E2E_BIN="${FC_E2E_BIN:-${CARGO_TARGET_DIR:-/tmp/filecleaner-target}/debug/fil
 PG_IMAGE="${FC_E2E_PG_IMAGE:-postgres:17-bookworm}"
 MINIO_IMAGE="${FC_E2E_MINIO_IMAGE:-pgsty/minio:RELEASE.2026-08-04T00-00-00Z}"
 LAB_ID="fc-e2e-$$-$(date +%s)"
-PG_CONTAINER="${FC_E2E_PG_CONTAINER:-${LAB_ID}-pg17}"
+PG_CONTAINER="${LAB_ID}-pg17"
 MINIO_CONTAINER="${LAB_ID}-minio"
 LAB_NET="${LAB_ID}-net"
 # Use /var/tmp by default (persistent rootfs shared across Docker Desktop WSL2 mount namespaces).
@@ -53,9 +53,7 @@ cleanup() {
         kill "$CORRUPT_MOCK_PID" >/dev/null 2>&1 || true
         wait "$CORRUPT_MOCK_PID" >/dev/null 2>&1 || true
     fi
-    if [[ -z "${FC_E2E_PG_CONTAINER:-}" ]]; then
-        docker rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true
-    fi
+    docker rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true
     docker rm -f "$MINIO_CONTAINER" >/dev/null 2>&1 || true
     docker network rm "$LAB_NET" >/dev/null 2>&1 || true
     rm -rf "$WORK_DIR" >/dev/null 2>&1 || true
@@ -110,19 +108,17 @@ docker run -d --name "$MINIO_CONTAINER" --network "$LAB_NET" \
     -e "MINIO_ROOT_PASSWORD=${FC_E2E_S3_SECRET_KEY}" \
     "$MINIO_IMAGE" server /data >/dev/null
 
-if [[ -z "${FC_E2E_PG_CONTAINER:-}" ]]; then
-    docker run -d --name "$PG_CONTAINER" --network "$LAB_NET" \
-        -e "POSTGRES_USER=${PG_USER}" \
-        -e "POSTGRES_PASSWORD=${PG_PASS}" \
-        -e "POSTGRES_DB=${PG_DB}" \
-        -v "${WAL_DIR}:/wal_archive" \
-        "$PG_IMAGE" \
-        postgres \
-        -c wal_level=replica \
-        -c archive_mode=on \
-        -c "archive_command=cp \"%p\" \"/wal_archive/%f.tmp\" && chmod 0644 \"/wal_archive/%f.tmp\" && mv \"/wal_archive/%f.tmp\" \"/wal_archive/%f\"" \
-        -c max_wal_senders=5 >/dev/null
-fi
+docker run -d --name "$PG_CONTAINER" --network "$LAB_NET" \
+    -e "POSTGRES_USER=${PG_USER}" \
+    -e "POSTGRES_PASSWORD=${PG_PASS}" \
+    -e "POSTGRES_DB=${PG_DB}" \
+    -v "${WAL_DIR}:/wal_archive" \
+    "$PG_IMAGE" \
+    postgres \
+    -c wal_level=replica \
+    -c archive_mode=on \
+    -c "archive_command=cp \"%p\" \"/wal_archive/%f.tmp\" && chmod 0644 \"/wal_archive/%f.tmp\" && mv \"/wal_archive/%f.tmp\" \"/wal_archive/%f\"" \
+    -c max_wal_senders=5 >/dev/null
 
 # Wait for MinIO and PostgreSQL health (fail-fast if either does not come up).
 MINIO_READY=0
@@ -252,7 +248,7 @@ mapfile -t WAL_LIST < <(find "$WAL_DIR" -maxdepth 1 -type f -regextype posix-ext
 idx=0
 for w in "${WAL_LIST[@]}"; do
     w_name="$(basename "$w")"
-    docker exec "$PG_CONTAINER" touch -d "2025-01-0$((idx + 1)) 02:00:00 UTC" "/wal_archive/${w_name}"
+    docker exec "$PG_CONTAINER" touch -d "@$((1735689600 + idx * 86400))" "/wal_archive/${w_name}"
     idx=$((idx + 1))
 done
 OLDEST_WAL_NAME="$(basename "${WAL_LIST[0]}")"
@@ -448,7 +444,15 @@ srv.uploaded = 0
 srv.serve_forever()
 PY
 CORRUPT_MOCK_PID=$!
-sleep 0.3
+MOCK_READY=0
+for _ in $(seq 1 30); do
+    if python3 -c "import socket; s = socket.create_connection(('127.0.0.1', ${MOCK_PORT}), timeout=0.5); s.close()" >/dev/null 2>&1; then
+        MOCK_READY=1
+        break
+    fi
+    sleep 0.1
+done
+[[ "$MOCK_READY" -eq 1 ]] || { echo "ERROR: corrupt-checksum mock server did not start on port ${MOCK_PORT}" >&2; exit 1; }
 
 CORRUPT_CFG="${WORK_DIR}/corrupt_s3.toml"
 sed "s|${MINIO_ENDPOINT}|http://127.0.0.1:${MOCK_PORT}|g" "$E2E_CFG" > "$CORRUPT_CFG"
@@ -456,11 +460,13 @@ FAULT_DUMP_2="${BASE_DIR}/pg_20241230_020000.sql"
 cp "$DUMP_FRESH" "$FAULT_DUMP_2"
 touch -d "2024-12-30 02:00:00 UTC" "$FAULT_DUMP_2"
 
+CORRUPT_LOG="${WORK_DIR}/corrupt_stderr.log"
 set +e
-"$FC_E2E_BIN" run -c "$CORRUPT_CFG" --rule pg-base-backups >/dev/null 2>&1
+"$FC_E2E_BIN" run -c "$CORRUPT_CFG" --rule pg-base-backups >"$CORRUPT_LOG" 2>&1
 CORRUPT_RC=$?
 set -e
-[[ "$CORRUPT_RC" -eq 1 ]] || { echo "ERROR: expected exit 1 on checksum mismatch, got $CORRUPT_RC" >&2; exit 1; }
+[[ "$CORRUPT_RC" -eq 1 ]] || { echo "ERROR: expected exit 1 on checksum mismatch, got $CORRUPT_RC" >&2; cat "$CORRUPT_LOG" >&2; exit 1; }
+grep -qiE "integrity|checksum|mismatch" "$CORRUPT_LOG" || { echo "ERROR: expected checksum mismatch diagnostic, got:" >&2; cat "$CORRUPT_LOG" >&2; exit 1; }
 [[ -e "$FAULT_DUMP_2" || -e "${FAULT_DUMP_2}.gz" ]] || { echo "ERROR: backup lost on checksum mismatch!" >&2; exit 1; }
 
 kill "$CORRUPT_MOCK_PID" >/dev/null 2>&1 || true
@@ -504,7 +510,7 @@ python3 "$S3_HELPER" get "$MINIO_ENDPOINT" "$BUCKET" "postgres/base/pg_20250101_
 python3 "$S3_HELPER" get "$MINIO_ENDPOINT" "$BUCKET" "postgres/wal/${OLDEST_WAL_NAME}.lz4" "$DL_WAL_LZ4"
 
 python3 - "$AUDIT_LOG" "$DL_DUMP_GZ" "$DL_WAL_LZ4" <<'PY'
-import hashlib, json, sys
+import hashlib, json, os, sys
 audit_path, dump_gz, wal_lz4 = sys.argv[1:4]
 expected = {}
 with open(audit_path, "r", encoding="utf-8") as f:
@@ -524,8 +530,9 @@ def sha256_file(p):
 
 dump_sha = sha256_file(dump_gz)
 wal_sha = sha256_file(wal_lz4)
-assert any(u.endswith("pg_20250101_020000.sql.gz") and s == dump_sha for u, s in expected.items()), f"dump sha mismatch: {dump_sha} vs {expected}"
-assert any(u.endswith(".lz4") and s == wal_sha for u, s in expected.items()), f"wal sha mismatch: {wal_sha} vs {expected}"
+wal_name = os.path.basename(wal_lz4)
+assert any(u.endswith("/pg_20250101_020000.sql.gz") and s == dump_sha for u, s in expected.items()), f"dump sha mismatch: {dump_sha} vs {expected}"
+assert any(u.endswith(f"/{wal_name}") and s == wal_sha for u, s in expected.items()), f"wal sha mismatch for {wal_name}: {wal_sha} vs {expected}"
 print(f"Verified MinIO SHA-256 matches audit.jsonl: dump={dump_sha[:16]}... wal={wal_sha[:16]}...")
 PY
 
