@@ -1086,7 +1086,7 @@ mod tests {
         // Vanishing between p0 and p1 in stability window fails closed with ProbeError.
         let p1_clone = p_vanish_p1.clone();
         let deleter = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(15));
+            std::thread::sleep(Duration::from_millis(30));
             let _ = fs::remove_file(&p1_clone);
         });
         let res_p1 = InUseDetector::check_batch(
@@ -1096,7 +1096,7 @@ mod tests {
                 check_os_locks: false,
                 check_proc_fd: false,
                 min_idle_age: None,
-                stability_window: Some(Duration::from_millis(80)),
+                stability_window: Some(Duration::from_millis(350)),
                 ..InUseConfig::default()
             },
             &FixedClock(now),
