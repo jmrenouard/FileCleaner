@@ -574,7 +574,7 @@ fn open_staged_tmp_private(staged_tmp: &Path) -> Result<File> {
 }
 
 /// Opens a regular file for reading without following symlinks or reparse points.
-fn open_regular_nofollow_read(path: &Path) -> Result<(File, fs::Metadata)> {
+pub(crate) fn open_regular_nofollow_read(path: &Path) -> Result<(File, fs::Metadata)> {
     open_regular_nofollow(path, false)
 }
 

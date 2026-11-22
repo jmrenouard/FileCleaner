@@ -17,6 +17,20 @@
 
 ## 2. Completed Actions (`COMPLETED`)
 
+### ACT-011 — Implement Pure-Rust S3 SigV4 Client with Fail-Closed SHA-256 Verification (`Issue #26`)
+
+- **Date / Time (ISO)**: `2026-11-22T02:16:00Z`
+- **Issue / Branch**: `#26` (`feat/issue-26-s3-sigv4-client`)
+- **Request**: Implement the pure-Rust S3 / S3-compatible transport and cryptographic verification layer (`src/s3.rs`) preserving `IMP-001` (zero C/C++ `-sys` crates, zero `ring`, zero `aws-lc-*`, zero `openssl-*`).
+- **Changes**:
+  - [`Cargo.toml`](../Cargo.toml) & [`Cargo.lock`](../Cargo.lock): Added pure-Rust `ureq` v3 (`default-features = false`, `rustls-no-provider`, `rustls-webpki-roots`), `rustls` v0.23 (`default-features = false`, `std`, `logging`, `tls12`), `rustls-rustcrypto` (`0.1.0-pre.0`), `hmac` (`0.12`), and `base64` (`0.22`). Verified zero `ring`/`cc`/`aws-lc-*`/`openssl-*` in `cargo tree` across Linux, Windows, and macOS.
+  - [`src/s3.rs`](../src/s3.rs): Implemented `S3Uploader` trait, `HttpS3Uploader` (`rustls-rustcrypto`, `https_only(!allow_insecure_http)`, `max_redirects(0)`), `RedactedSecret` non-logging credentials, AWS SigV4 canonical signer (verified against AWS official test vectors), streaming single-part `PutObject` and S3 Multipart Upload (`CreateMultipartUpload` / `UploadPart` / `CompleteMultipartUpload` with embedded `<Error>` detection / `AbortMultipartUpload` on failure), S3 composite multipart checksum matching (`<b64>-<N>`), non-overwrite `HeadObject` preflight, fail-closed `HeadObject` (`x-amz-checksum-mode: ENABLED`) and streaming `GetObject` (`ReadbackSha256`) verification, bounded 5xx retry, and deterministic loopback `TcpListener` mock S3 tests.
+  - [`src/actions.rs`](../src/actions.rs) & [`src/lib.rs`](../src/lib.rs): Made `open_regular_nofollow_read` `pub(crate)` for TOCTOU-safe S3 file streaming and exported `s3` module symbols.
+  - [`tests/governance_and_docs_test.rs`](../tests/governance_and_docs_test.rs): Strengthened `cargo_manifest_enforces_version_and_pure_rust_contract` to inspect `Cargo.toml` and `Cargo.lock` for forbidden native/C crates and verify `ureq`/`rustls` remain off `ring` and `aws-lc-*`.
+  - [`docs/RCA_REGISTER.md`](RCA_REGISTER.md): Logged `APP-003` documenting the pure-Rust `rustls-rustcrypto` TLS backend trade-off.
+- **Result**:
+  - Verified in WSL2 (`CARGO_TARGET_DIR=/tmp/filecleaner-target`): `cargo fmt --all -- --check` PASS, 3-target `cargo clippy --all-targets -- -D warnings` PASS (`0` warnings across Linux, `x86_64-pc-windows-gnu`, `aarch64-apple-darwin`), `cargo test --all-targets` PASS (`130/130`: `69` unit + `61` integration across `9` suites), and `cargo llvm-cov --all-targets --workspace --summary-only --fail-under-lines 90` PASS (`93.77%` line coverage / `92.14%` region coverage across `11,067` lines). Dedicated `/ponytail-review` caught and fixed SigV4 default-port `:443`/`:80` Host-header mismatch, empty key rejection, XML namespace attribute parsing, and 0-byte PutObject handling before merge (PR `#27`).
+
 ### ACT-010 — Add S3 Archival Config Schema, Validation Invariants, and Error Types (`Issue #24`)
 
 - **Date / Time (ISO)**: `2026-11-22T00:48:00Z`

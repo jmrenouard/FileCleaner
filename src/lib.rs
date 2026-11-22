@@ -10,6 +10,7 @@ pub mod error;
 pub mod hooks;
 pub mod in_use;
 pub mod policy;
+pub mod s3;
 pub mod scanner;
 
 pub mod engine;
@@ -51,4 +52,7 @@ pub use in_use::{
     ProcFdProbeOutcome,
 };
 pub use policy::{CandidateDecision, DecisionKind, RetentionEngine, RuleOutcome, SweepPlan};
+pub use s3::{
+    build_object_key, build_s3_uri, HttpS3Uploader, S3UploadReceipt, S3UploadRequest, S3Uploader,
+};
 pub use scanner::{Clock, FixedClock, ScanReport, ScannedFile, Scanner, SystemClock};
