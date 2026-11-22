@@ -354,7 +354,7 @@ fn cargo_manifest_enforces_version_and_pure_rust_contract() {
 
     let pkg = parsed["package"].as_table().unwrap();
     assert_eq!(pkg["name"].as_str(), Some("filecleaner"));
-    assert_eq!(pkg["version"].as_str(), Some("1.0.1"));
+    assert_eq!(pkg["version"].as_str(), Some("1.1.0"));
     assert_eq!(pkg["license"].as_str(), Some("Apache-2.0"));
 
     let deps = parsed["dependencies"].as_table().unwrap();
@@ -678,11 +678,26 @@ fn howto_en_and_fr_editions_exist_and_keep_heading_parity() {
     assert!(fr.contains("../en/HOWTO.md"));
     assert!(fr.contains("GUIDE_UTILISATEUR.md"));
 
-    assert_eq!(
-        heading_signature_outside_fences(&en),
-        heading_signature_outside_fences(&fr),
-        "docs/en/HOWTO.md and docs/fr/HOWTO.md must maintain identical heading structure"
-    );
+    for (en_rel, fr_rel) in [
+        ("README.md", "README.fr.md"),
+        ("docs/en/HOWTO.md", "docs/fr/HOWTO.md"),
+        ("docs/en/USER_GUIDE.md", "docs/fr/GUIDE_UTILISATEUR.md"),
+        (
+            "docs/en/COOKBOOK_EXAMPLES.md",
+            "docs/fr/EXEMPLES_RECETTES.md",
+        ),
+        ("docs/en/SPECIFICATIONS.md", "docs/fr/SPECIFICATIONS.md"),
+    ] {
+        let en_doc = fs::read_to_string(root.join(en_rel))
+            .unwrap_or_else(|e| panic!("failed to read {en_rel}: {e}"));
+        let fr_doc = fs::read_to_string(root.join(fr_rel))
+            .unwrap_or_else(|e| panic!("failed to read {fr_rel}: {e}"));
+        assert_eq!(
+            heading_signature_outside_fences(&en_doc),
+            heading_signature_outside_fences(&fr_doc),
+            "{en_rel} and {fr_rel} must maintain identical heading structure"
+        );
+    }
 }
 
 #[test]

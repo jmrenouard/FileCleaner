@@ -2,7 +2,7 @@
   <img src="../assets/header-banner.svg" alt="FileCleaner — Moteur de Rétention Déterministe en Rust" width="100%" />
 </div>
 
-# FileCleaner v1.0.1 — Spécifications Techniques Formelles & Architecture d'Ingénierie
+# FileCleaner v1.1.0 — Spécifications Techniques Formelles & Architecture d'Ingénierie
 
 > **Éditions linguistiques** : [English (`docs/en/SPECIFICATIONS.md`)](../en/SPECIFICATIONS.md) · **Français (Normatif)**  
 > **Documents de gouvernance associés** : [Session d'alignement équipe](../team-sessions/team-session-2026-11-20.md) · [Journal d'actions](../ACTION_LOGBOOK.md) · [Registre RCA](../RCA_REGISTER.md)
@@ -27,7 +27,7 @@
 
 ### 1.1 Objectif et périmètre
 
-**FileCleaner** (`filecleaner` v1.0.1, Rust Edition 2021, Apache-2.0) est un moteur déterministe et multiplateforme dédié à la rétention de répertoires, à la protection des sauvegardes par garde-fous, à la détection de fichiers actifs, à l'orchestration de transformations de cycle de vie et à la planification en démon. Il remplace les scripts shell fragiles (`find ... -delete`, `logrotate` dépendant de l'OS) par un pipeline formellement spécifié à échec sécurisé (*fail-closed*), conçu pour éliminer toute perte silencieuse de données sur serveurs de production, coffres de sauvegarde et postes développeurs.
+**FileCleaner** (`filecleaner` v1.1.0, Rust Edition 2021, Apache-2.0) est un moteur déterministe et multiplateforme dédié à la rétention de répertoires, à la protection des sauvegardes par garde-fous, à la détection de fichiers actifs, à l'orchestration de transformations de cycle de vie et à la planification en démon. Il remplace les scripts shell fragiles (`find ... -delete`, `logrotate` dépendant de l'OS) par un pipeline formellement spécifié à échec sécurisé (*fail-closed*), conçu pour éliminer toute perte silencieuse de données sur serveurs de production, coffres de sauvegarde et postes développeurs.
 
 ### 1.2 Philosophie « zéro perte silencieuse » et pipeline strict en 6 phases
 
