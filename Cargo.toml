@@ -19,7 +19,7 @@ walkdir = "2"
 globset = "0.4"
 regex = "1"
 flate2 = "1"
-lz4_flex = "0.11"
+lz4_flex = "0.14"
 brotli = "7"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 sha2 = "0.10"
