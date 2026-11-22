@@ -12,7 +12,7 @@
 [![Docker Hub](https://img.shields.io/docker/v/jmrenouard/filecleaner?sort=semver&style=flat-square&logo=docker&color=2563eb&label=Docker%20Hub)](https://hub.docker.com/r/jmrenouard/filecleaner)
 [![CI](https://github.com/jmrenouard/FileCleaner/actions/workflows/ci.yml/badge.svg)](https://github.com/jmrenouard/FileCleaner/actions/workflows/ci.yml)
 [![Pure Rust](https://img.shields.io/badge/Rust-2021_Pure--Rust-10b981?style=flat-square&logo=rust)](Cargo.toml)
-[![Tests](https://img.shields.io/badge/Tests-135_Passed_+_Live_E2E-3b82f6?style=flat-square)](docs/ACTION_LOGBOOK.md)
+[![Tests](https://img.shields.io/badge/Tests-135_Passed_%2B_Live_E2E-3b82f6?style=flat-square)](docs/ACTION_LOGBOOK.md)
 [![Coverage](https://img.shields.io/badge/Coverage-94.01%25_llvm--cov-10b981?style=flat-square)](docs/ACTION_LOGBOOK.md)
 [![Clippy](https://img.shields.io/badge/Clippy-0_Warnings-10b981?style=flat-square)](docs/ACTION_LOGBOOK.md)
 [![Targets](https://img.shields.io/badge/Targets-9_Cross--Platform_Binaries-0284c7?style=flat-square)](#9-target-cross-compilation-matrix)
