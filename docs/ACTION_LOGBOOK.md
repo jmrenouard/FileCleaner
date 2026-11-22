@@ -17,6 +17,18 @@
 
 ## 2. Completed Actions (`COMPLETED`)
 
+### ACT-015 — Document S3 Archival Sink and DBA PostgreSQL WAL Profile in Bilingual EN/FR Specs & Cookbooks (`Issue #34`)
+
+- **Date / Time (ISO)**: `2026-11-22T03:17:00Z`
+- **Issue / Branch**: `#34` (`docs/issue-34-bilingual-s3-dba-specs-cookbooks`)
+- **Request**: Synchronize bilingual English and French technical specifications, production cookbooks, and root READMEs for FileCleaner v1.1 `upload_s3` archival sink and DBA PostgreSQL WAL/base-backup retention workflows.
+- **Changes**:
+  - [`docs/en/SPECIFICATIONS.md`](en/SPECIFICATIONS.md) & [`docs/fr/SPECIFICATIONS.md`](fr/SPECIFICATIONS.md) (`64/64` heading parity): Documented pure-Rust S3 transport stack (`ureq` v3, `rustls`, `rustls-rustcrypto`, `hmac`, `base64`), top-level `[s3]` and `[rules.s3]`, `ActionStep::UploadS3`, `S3Config` & `S3VerifyMode`, `INV-CFG-08`/`INV-CFG-10`/`INV-CFG-13`/`INV-CFG-14`, §7.2.5 `UploadS3` SigV4 + multipart + fail-closed SHA-256 verification protocol (`LocalDeleteAllowed` invariant), `--profile dba-postgres`, `FileCleanerError::S3Upload`, JSONL `details` metadata, and S3 security threat mitigations.
+  - [`docs/en/COOKBOOK_EXAMPLES.md`](en/COOKBOOK_EXAMPLES.md) & [`docs/fr/EXEMPLES_RECETTES.md`](fr/EXEMPLES_RECETTES.md) (`26/26` heading parity): Added Recipe 5 (PostgreSQL Base Backups & WAL Spool Archival to S3 / MinIO with `upload_s3`, `.history`/`.partial` PITR guards, `verify_pg_wal_safe.sh`, `init --profile dba-postgres`, validated TOML config, expected JSONL audit output, and live Docker E2E commands via `scripts/e2e-dba-s3-lab.sh`).
+  - [`README.md`](../README.md) & [`README.fr.md`](../README.fr.md) (`15/15` heading parity): Updated feature matrix, pure-Rust dependency stack, and CLI quickstart (`upload_s3`, `init --profile dba-postgres`, `scripts/e2e-dba-s3-lab.sh`).
+- **Result**:
+  - Verified in WSL2 (`CARGO_TARGET_DIR=/tmp/filecleaner-target`): EN/FR heading parity `100%` across all 5 doc pairs (`15/15`, `64/64`, `26/26`, `26/26`, `44/44`), `cargo fmt --all -- --check` PASS, 3-target `cargo clippy --all-targets -- -D warnings` PASS (`0` warnings), and `cargo test --all-targets` PASS (`135/135` active, including `all_documented_configs_and_examples_parse_and_validate` validating Recipe 5 EN & FR TOML blocks and `all_repository_markdown_files_enforce_latex_math_integrity_rules`).
+
 ### ACT-014 — Add Docker/MinIO E2E Verification Harness Against PostgreSQL (`multi-db-docker-env`) (`Issue #32`)
 
 - **Date / Time (ISO)**: `2026-11-22T03:07:00Z`

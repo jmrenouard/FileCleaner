@@ -106,7 +106,8 @@ flowchart LR
 | **Retention Policies** | `max_files`, `max_age`, `max_total_size`, `combine_mode` (`any` \| `all`), `eviction_order` (`oldest_first` \| `largest_first`), human byte units (`B`, `KB`/`KiB`..`PB`/`PiB`), human durations (`ms`, `s`, `m`, `h`, `d`, `w`). |
 | **Backup Guardrails** | `min_keep_files`, `min_valid_backup_bytes` (excludes corrupt/0-byte stubs), `require_newer_within` (dead-man's-switch), `freeze_if_newest_older_than`, `freeze_on_empty_valid`. |
 | **Pre-Delete Hooks** | Direct `Command::new` (`argv` token expansion `{path}`, `{name}`, `{size}`, `{mtime_iso}`, `{rule}`), `FILECLEANER_*` env vars, `timeout` kill/reap, exit `42` benign veto (`skip_exit_code`), `abort_file` / `abort_rule` / `warn_and_continue`. |
-| **Lifecycle Actions** | Composable ordered pipelines: `rename_by_date`, `compress` (pure-Rust `gzip`, `lz4`, `brotli`, `zip`), `move` (atomic rename + cross-FS SHA-256 verification + `move_date_subdir`), `copy_truncate` (explicit opt-in), `trash`, `delete`. |
+| **Lifecycle Actions** | Composable ordered pipelines: `rename_by_date`, `compress` (pure-Rust `gzip`, `lz4`, `brotli`, `zip`), `move` (atomic rename + cross-FS SHA-256 verification + `move_date_subdir`), `upload_s3` (pure-Rust SigV4 + streaming multipart + fail-closed SHA-256 verification before local deletion), `copy_truncate` (explicit opt-in), `trash`, `delete`. |
+| **S3 & DBA PostgreSQL** | Env-var-only S3/MinIO/Ceph RGW/R2 credentials (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, zero plaintext secrets), `filecleaner init --profile dba-postgres`, PITR `.history`/`.partial` guards + `examples/hooks/verify_pg_wal_safe.sh`, and live 6-scenario PG17 + MinIO Docker E2E lab (`scripts/e2e-dba-s3-lab.sh`). |
 | **Daemon & Observability** | `interval`, `notify` (debounced FS watcher), and `hybrid` modes; atomic PID, live JSON `state_file`, cooperative `stop_file`, `SIGINT`/`SIGTERM` graceful shutdown, `--max-sweeps`, `systemd`/`launchd`/`windows-task` templates, and synchronous JSONL audit logs. |
 
 ---
@@ -132,8 +133,9 @@ sudo install -m 0755 filecleaner /usr/local/bin/filecleaner
 ### Day-1 Safe Workflow (`init` $\rightarrow$ `validate` $\rightarrow$ `plan` $\rightarrow$ `run`)
 
 ```bash
-# 1. Generate a safe annotated starter config (profiles: backups | logs | spool; dry_run = true)
+# 1. Generate a safe annotated starter config (profiles: backups | logs | spool | dba-postgres; dry_run = true)
 filecleaner init --output filecleaner.toml --profile backups --format toml
+filecleaner init --output pg-wal-s3.toml --profile dba-postgres --format toml
 
 # 2. Validate TOML/YAML syntax, regex/globs, units, and all INV-CFG-* safety invariants
 filecleaner validate filecleaner.toml
@@ -282,7 +284,7 @@ rules:
 
 ## 9-Target Cross-Compilation Matrix
 
-FileCleaner depends exclusively on pure-Rust crates (`miniz_oxide`, `lz4_flex`, `brotli`, `zip` pure-Rust `deflate`, `sha2`), requiring zero C/C++ `-sys` libraries or external cross-compilers across all 9 official release targets:
+FileCleaner depends exclusively on pure-Rust crates (`miniz_oxide`, `lz4_flex`, `brotli`, `zip` pure-Rust `deflate`, `sha2`, `ureq` v3 + `rustls` + `rustls-rustcrypto`, `hmac`, `base64`), requiring zero C/C++ `-sys` libraries or external cross-compilers across all 9 official release targets:
 
 | Operating System | Architecture | Target Triple | Artifact Format | Notes |
 | :--- | :--- | :--- | :--- | :--- |
