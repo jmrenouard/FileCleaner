@@ -4,13 +4,21 @@
 //! in-use + pre-delete hook exit-42 veto to trash quarantine.
 
 use assert_cmd::Command;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::Engine;
 use chrono::{TimeZone, Utc};
 use filecleaner::SweepReport;
 use flate2::read::GzDecoder;
 use lz4_flex::frame::FrameDecoder;
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::Read;
+use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::{Duration, UNIX_EPOCH};
 use tempfile::TempDir;
 
@@ -388,4 +396,430 @@ skip_exit_code = 42
     );
     assert!(!ready_verified.exists());
     assert!(trash.join("done.csv").exists());
+}
+
+struct DbaMockS3 {
+    endpoint: String,
+    objects: Arc<Mutex<HashMap<String, Vec<u8>>>>,
+    shutdown: Arc<AtomicBool>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl Drop for DbaMockS3 {
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::SeqCst);
+        let _ = TcpStream::connect(self.endpoint.trim_start_matches("http://"));
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+fn start_dba_mock_s3() -> DbaMockS3 {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let addr = listener.local_addr().unwrap();
+    let objects = Arc::new(Mutex::new(HashMap::<String, Vec<u8>>::new()));
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let objs = Arc::clone(&objects);
+    let sd = Arc::clone(&shutdown);
+
+    let handle = thread::spawn(move || {
+        while !sd.load(Ordering::SeqCst) {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let _ = stream.set_nonblocking(false);
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut req_line = String::new();
+                    if reader.read_line(&mut req_line).unwrap_or(0) == 0 {
+                        continue;
+                    }
+                    let mut parts = req_line.split_whitespace();
+                    let method = parts.next().unwrap_or("").to_string();
+                    let target = parts.next().unwrap_or("/").to_string();
+                    let mut content_len = 0usize;
+                    loop {
+                        let mut line = String::new();
+                        if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                            break;
+                        }
+                        let t = line.trim_end_matches(['\r', '\n']);
+                        if t.is_empty() {
+                            break;
+                        }
+                        if let Some((k, v)) = t.split_once(':') {
+                            if k.eq_ignore_ascii_case("content-length") {
+                                content_len = v.trim().parse().unwrap_or(0);
+                            }
+                        }
+                    }
+                    let mut body = vec![0u8; content_len];
+                    if content_len > 0 && reader.read_exact(&mut body).is_err() {
+                        continue;
+                    }
+                    let key = target
+                        .split('?')
+                        .next()
+                        .unwrap_or("/")
+                        .trim_start_matches('/')
+                        .to_string();
+                    let mut map = objs.lock().unwrap();
+                    let resp = match method.as_str() {
+                        "HEAD" => match map.get(&key) {
+                            Some(data) => {
+                                let b64 = BASE64_STANDARD.encode(Sha256::digest(data));
+                                format!(
+                                    "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: {}\r\nETag: \"dba\"\r\nx-amz-checksum-sha256: {b64}\r\n\r\n",
+                                    data.len()
+                                )
+                            }
+                            None => "HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n".to_string(),
+                        },
+                        "PUT" => {
+                            map.insert(key, body);
+                            "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 0\r\nETag: \"dba\"\r\n\r\n".to_string()
+                        }
+                        _ => "HTTP/1.1 405 Method Not Allowed\r\nConnection: close\r\nContent-Length: 0\r\n\r\n".to_string(),
+                    };
+                    let _ = stream.write_all(resp.as_bytes());
+                    let _ = stream.flush();
+                }
+                Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    DbaMockS3 {
+        endpoint: format!("http://{addr}"),
+        objects,
+        shutdown,
+        handle: Some(handle),
+    }
+}
+
+#[test]
+fn howto_workflow_5_dba_postgres_wal_and_base_backups_s3_archival_and_pitr_guards() {
+    let tmp = TempDir::new().unwrap();
+
+    // 1. `filecleaner init --profile dba-postgres` generates valid TOML and YAML configs.
+    let init_toml = tmp.path().join("dba.toml");
+    let init_yaml = tmp.path().join("dba.yaml");
+    cli_bin()
+        .args([
+            "init",
+            "--profile",
+            "dba-postgres",
+            "--format",
+            "toml",
+            "--output",
+            init_toml.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    cli_bin()
+        .args(["validate", init_toml.to_str().unwrap()])
+        .assert()
+        .success();
+
+    cli_bin()
+        .args([
+            "init",
+            "--profile",
+            "dba-postgres",
+            "--format",
+            "yaml",
+            "--output",
+            init_yaml.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    cli_bin()
+        .args(["validate", init_yaml.to_str().unwrap()])
+        .assert()
+        .success();
+
+    // 2. Build DBA base-backup + WAL archive layout.
+    let base_dir = tmp.path().join("pg_base");
+    let wal_dir = tmp.path().join("pg_wal");
+    fs::create_dir_all(&base_dir).unwrap();
+    fs::create_dir_all(wal_dir.join("archive_status")).unwrap();
+
+    let now_s = Utc::now().timestamp();
+    let today_fmt = Utc::now().format("%Y%m%d_%H%M%S").to_string();
+    let broken_today = base_dir.join(format!("pg_{today_fmt}.sql"));
+    fs::write(&broken_today, b"").unwrap(); // 0-byte failed dump stub
+
+    let old_base_1 = base_dir.join("pg_20250101_020000.sql");
+    let old_base_2 = base_dir.join("pg_20250102_020000.sql");
+    write_stamped(
+        &old_base_1,
+        b"-- pg_dump base 1\n".repeat(32).as_slice(),
+        now_s - 9000,
+    );
+    write_stamped(
+        &old_base_2,
+        b"-- pg_dump base 2\n".repeat(32).as_slice(),
+        now_s - 8000,
+    );
+
+    // WAL spool: complete 24-hex segments + protected .history, .partial, and archive_status/*.ready.
+    let history_file = wal_dir.join("00000002.history");
+    let partial_file = wal_dir.join("000000010000000000000005.partial");
+    let ready_file = wal_dir.join("archive_status/000000010000000000000001.ready");
+    write_stamped(
+        &history_file,
+        b"1\t0/3000000\tno recovery target\n",
+        now_s - 9000,
+    );
+    write_stamped(&partial_file, &[b'P'; 512], now_s - 9000);
+    write_stamped(&ready_file, b"", now_s - 9000);
+
+    let wal_names = [
+        "000000010000000000000001",
+        "000000010000000000000002",
+        "000000010000000000000003",
+        "000000010000000000000004",
+    ];
+    for (i, w) in wal_names.iter().enumerate() {
+        let p = wal_dir.join(w);
+        write_stamped(
+            &p,
+            format!("WAL-SEGMENT-{w}\n").repeat(64).as_bytes(),
+            now_s - 5000 + (i as i64) * 100,
+        );
+    }
+
+    // Hook vetoes WAL >= 000000010000000000000003 (`exit 42`).
+    #[cfg(unix)]
+    let (hook_cmd, hook_args) = {
+        let repo_hook =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/hooks/verify_pg_wal_safe.sh");
+        (
+            "bash".to_string(),
+            vec![repo_hook.to_string_lossy().into_owned()],
+        )
+    };
+    #[cfg(windows)]
+    let (hook_cmd, hook_args) = {
+        let script = tmp.path().join("wal_veto.ps1");
+        fs::write(
+            &script,
+            "if ($env:FILECLEANER_NAME -ge $env:FILECLEANER_PG_MIN_KEEP_WAL) { exit 42 }\nexit 0\n",
+        )
+        .unwrap();
+        (
+            "powershell.exe".to_string(),
+            vec![
+                "-NoProfile".to_string(),
+                "-NonInteractive".to_string(),
+                "-ExecutionPolicy".to_string(),
+                "Bypass".to_string(),
+                "-File".to_string(),
+                script.to_string_lossy().into_owned(),
+            ],
+        )
+    };
+
+    let mock_s3 = start_dba_mock_s3();
+    let endpoint = mock_s3.endpoint.clone();
+    let objects = Arc::clone(&mock_s3.objects);
+    let cfg_path = tmp.path().join("dba_live.toml");
+    let args_toml = serde_json::to_string(&hook_args).unwrap();
+    fs::write(
+        &cfg_path,
+        format!(
+            r#"
+dry_run = false
+
+[s3]
+bucket = "pg-dba-bkt"
+region = "eu-west-3"
+endpoint = "{endpoint}"
+force_path_style = true
+allow_insecure_http = true
+access_key_env = "FC_DBA_AK"
+secret_key_env = "FC_DBA_SK"
+timeout = "5s"
+max_retries = 1
+
+[[rules]]
+name = "pg-base-backups"
+path = "{}"
+include_globs = ["pg_*.sql"]
+time_basis = "filename_date"
+filename_date_regex = 'pg_(\d{{8}}_\d{{6}})'
+filename_date_format = "%Y%m%d_%H%M%S"
+max_files = 2
+actions = ["compress", "upload_s3", "delete"]
+compression = "gzip"
+[rules.s3]
+bucket = "pg-dba-bkt"
+region = "eu-west-3"
+endpoint = "{endpoint}"
+prefix = "base"
+force_path_style = true
+allow_insecure_http = true
+access_key_env = "FC_DBA_AK"
+secret_key_env = "FC_DBA_SK"
+[rules.backup_guard]
+enabled = true
+min_keep_files = 2
+min_valid_backup_bytes = "200B"
+require_newer_within = "36h"
+freeze_on_empty_valid = true
+[rules.in_use]
+enabled = false
+
+[[rules]]
+name = "pg-wal-archive"
+path = "{}"
+include_regex = '^[0-9A-F]{{24}}$'
+exclude_globs = ["*.history", "*.partial", "*.ready", "*.done", "*.tmp", "archive_status/**"]
+min_file_size = "100B"
+max_files = 1
+actions = ["compress", "upload_s3", "delete"]
+compression = "lz4"
+[rules.s3]
+bucket = "pg-dba-bkt"
+region = "eu-west-3"
+endpoint = "{endpoint}"
+prefix = "wal"
+force_path_style = true
+allow_insecure_http = true
+access_key_env = "FC_DBA_AK"
+secret_key_env = "FC_DBA_SK"
+[rules.backup_guard]
+enabled = true
+min_keep_files = 1
+min_valid_backup_bytes = "100B"
+freeze_on_empty_valid = true
+[rules.in_use]
+enabled = false
+[rules.pre_delete_hook]
+command = "{}"
+args = {args_toml}
+skip_exit_code = 42
+[rules.pre_delete_hook.env]
+FILECLEANER_PG_MIN_KEEP_WAL = "000000010000000000000003"
+"#,
+            toml_path(&base_dir),
+            toml_path(&wal_dir),
+            toml_path(Path::new(&hook_cmd)),
+        ),
+    )
+    .unwrap();
+
+    // 3. With only a 0-byte today stub + stale valid dumps, base-backup rule freezes (`exit 3`) with zero uploads.
+    cli_bin()
+        .env("FC_DBA_AK", "ak")
+        .env("FC_DBA_SK", "sk")
+        .args([
+            "run",
+            "-c",
+            cfg_path.to_str().unwrap(),
+            "--rule",
+            "pg-base-backups",
+            "--fail-on-freeze",
+        ])
+        .assert()
+        .code(3);
+    assert!(old_base_1.exists() && old_base_2.exists());
+    assert!(objects.lock().unwrap().is_empty());
+
+    // 4. Write a valid fresh base backup today, then run both DBA rules live.
+    fs::write(&broken_today, vec![b'D'; 512]).unwrap();
+    cli_bin()
+        .env("FC_DBA_AK", "ak")
+        .env("FC_DBA_SK", "sk")
+        .args(["run", "-c", cfg_path.to_str().unwrap(), "--fail-on-freeze"])
+        .assert()
+        .code(0);
+
+    // Base backups: oldest dump compressed + uploaded + deleted; newest 2 kept locally.
+    assert!(!old_base_1.exists());
+    assert!(old_base_2.exists() && broken_today.exists());
+
+    // WAL spool: .history, .partial, archive_status/*.ready, floor (...0004), and hook-vetoed (...0003) remain untouched.
+    assert!(history_file.exists());
+    assert!(partial_file.exists());
+    assert!(ready_file.exists());
+    assert!(wal_dir.join("000000010000000000000003").exists());
+    assert!(wal_dir.join("000000010000000000000004").exists());
+
+    // Eligible older WAL segments (...0001 and ...0002) archived as LZ4 to S3 and deleted locally.
+    assert!(!wal_dir.join("000000010000000000000001").exists());
+    assert!(!wal_dir.join("000000010000000000000002").exists());
+
+    let uploaded = objects.lock().unwrap().clone();
+    assert!(uploaded.contains_key("pg-dba-bkt/base/pg_20250101_020000.sql.gz"));
+    assert!(uploaded.contains_key("pg-dba-bkt/wal/000000010000000000000001.lz4"));
+    assert!(uploaded.contains_key("pg-dba-bkt/wal/000000010000000000000002.lz4"));
+    assert!(!uploaded.contains_key("pg-dba-bkt/wal/000000010000000000000003.lz4"));
+
+    // Decompress archived LZ4 WAL segment and verify exact content.
+    let mut wal_plain = Vec::new();
+    FrameDecoder::new(&uploaded["pg-dba-bkt/wal/000000010000000000000001.lz4"][..])
+        .read_to_end(&mut wal_plain)
+        .unwrap();
+    assert_eq!(
+        wal_plain,
+        "WAL-SEGMENT-000000010000000000000001\n"
+            .repeat(64)
+            .as_bytes()
+    );
+
+    // 5. Verify verify_pg_wal_safe.sh boundary-file, replica veto (42), .history veto (42), and malformed marker fail-closed (1) on Unix.
+    #[cfg(unix)]
+    {
+        let repo_hook =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/hooks/verify_pg_wal_safe.sh");
+        let seg3 = wal_dir.join("000000010000000000000003");
+        let marker = tmp.path().join(".pitr_min_keep_wal");
+        fs::write(&marker, "000000010000000000000004\n").unwrap();
+
+        // Older than base boundary + older than replica boundary -> exit 0.
+        let st_ok = std::process::Command::new("bash")
+            .arg(&repo_hook)
+            .env("FILECLEANER_PATH", &seg3)
+            .env("FILECLEANER_NAME", "000000010000000000000003")
+            .env("FILECLEANER_PG_MIN_KEEP_WAL_FILE", &marker)
+            .env("FILECLEANER_PG_REPLICA_WAL", "000000010000000000000004")
+            .status()
+            .unwrap();
+        assert_eq!(st_ok.code(), Some(0));
+
+        // Equal to lagging standby replica boundary -> veto exit 42.
+        let st_rep = std::process::Command::new("bash")
+            .arg(&repo_hook)
+            .env("FILECLEANER_PATH", &seg3)
+            .env("FILECLEANER_NAME", "000000010000000000000003")
+            .env("FILECLEANER_PG_MIN_KEEP_WAL_FILE", &marker)
+            .env("FILECLEANER_PG_REPLICA_WAL", "000000010000000000000003")
+            .status()
+            .unwrap();
+        assert_eq!(st_rep.code(), Some(42));
+
+        // Timeline .history file -> veto exit 42.
+        let st_hist = std::process::Command::new("bash")
+            .arg(&repo_hook)
+            .env("FILECLEANER_PATH", &history_file)
+            .env("FILECLEANER_NAME", "00000002.history")
+            .status()
+            .unwrap();
+        assert_eq!(st_hist.code(), Some(42));
+
+        // Malformed boundary marker -> fail-closed operational error exit 1.
+        fs::write(&marker, "corrupt-not-hex\n").unwrap();
+        let st_bad = std::process::Command::new("bash")
+            .arg(&repo_hook)
+            .env("FILECLEANER_PATH", &seg3)
+            .env("FILECLEANER_NAME", "000000010000000000000003")
+            .env("FILECLEANER_PG_MIN_KEEP_WAL_FILE", &marker)
+            .status()
+            .unwrap();
+        assert_eq!(st_bad.code(), Some(1));
+    }
 }
