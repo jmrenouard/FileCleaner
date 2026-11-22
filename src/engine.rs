@@ -2,7 +2,7 @@
 
 use crate::actions::{ActionExecutor, WorkingTarget};
 use crate::audit::{AuditEntry, AuditEventKind, AuditLogger, RuleSummaryRow, SweepSummary};
-use crate::config::{Config, RuleConfig};
+use crate::config::{ActionStep, Config, RuleConfig};
 use crate::error::{FileCleanerError, Result};
 use crate::hooks::{
     evaluate_hook, format_action_summary, HookCandidate, HookFailureDisposition, HookRunner,
@@ -10,6 +10,7 @@ use crate::hooks::{
 };
 use crate::in_use::{InUseBatchResult, InUseDetector, LockProbe, SweepLockProbe};
 use crate::policy::{DecisionKind, RetentionEngine, RuleOutcome, SweepPlan};
+use crate::s3::{HttpS3Uploader, S3Uploader};
 use crate::scanner::{
     system_time_to_utc, Clock, CompiledRuleMatchers, ScanReport, Scanner, SystemClock,
 };
@@ -176,7 +177,37 @@ impl SweepEngine {
     ) -> Result<SweepReport> {
         config.validate()?;
         let compiled = Scanner::compile_config(config)?;
-        Self::run_config_precompiled(config, &compiled, opts, clock, lock_probe, hook_runner)
+        Self::run_config_precompiled_with_s3(
+            config,
+            &compiled,
+            opts,
+            clock,
+            lock_probe,
+            hook_runner,
+            None,
+        )
+    }
+
+    /// Executes the strict 6-phase pipeline with an injectable [`S3Uploader`] for deterministic testing.
+    pub fn run_config_with_s3(
+        config: &Config,
+        opts: &RunOptions,
+        clock: &dyn Clock,
+        lock_probe: &dyn LockProbe,
+        hook_runner: &dyn HookRunner,
+        s3_uploader: &dyn S3Uploader,
+    ) -> Result<SweepReport> {
+        config.validate()?;
+        let compiled = Scanner::compile_config(config)?;
+        Self::run_config_precompiled_with_s3(
+            config,
+            &compiled,
+            opts,
+            clock,
+            lock_probe,
+            hook_runner,
+            Some(s3_uploader),
+        )
     }
 
     /// Executes the strict 6-phase pipeline using precompiled rule globs and regex matchers.
@@ -188,11 +219,41 @@ impl SweepEngine {
         lock_probe: &dyn LockProbe,
         hook_runner: &dyn HookRunner,
     ) -> Result<SweepReport> {
+        Self::run_config_precompiled_with_s3(
+            config,
+            compiled,
+            opts,
+            clock,
+            lock_probe,
+            hook_runner,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_config_precompiled_with_s3(
+        config: &Config,
+        compiled: &HashMap<String, CompiledRuleMatchers>,
+        opts: &RunOptions,
+        clock: &dyn Clock,
+        lock_probe: &dyn LockProbe,
+        hook_runner: &dyn HookRunner,
+        s3_uploader: Option<&dyn S3Uploader>,
+    ) -> Result<SweepReport> {
         let selected_rules = select_rules(&config.rules, &opts.rule_filter)?;
         let global_dry_run = config.dry_run || opts.dry_run;
         let run_id = next_run_id();
         let started_at = clock.now();
         let sweep_timer = Instant::now();
+
+        let needs_live_s3 = s3_uploader.is_none()
+            && !global_dry_run
+            && selected_rules
+                .iter()
+                .any(|r| r.enabled && !r.dry_run && r.actions.contains(&ActionStep::UploadS3));
+        let owned_s3 = needs_live_s3.then(HttpS3Uploader::new);
+        let effective_s3_uploader: Option<&dyn S3Uploader> =
+            s3_uploader.or_else(|| owned_s3.as_ref().map(|u| u as &dyn S3Uploader));
 
         let effective_audit_path = opts
             .audit_log_override
@@ -266,6 +327,7 @@ impl SweepEngine {
                 clock,
                 lock_probe,
                 hook_runner,
+                effective_s3_uploader,
                 &opts.shutdown,
             )?;
 
@@ -360,6 +422,7 @@ fn execute_single_rule(
     clock: &dyn Clock,
     lock_probe: &dyn LockProbe,
     hook_runner: &dyn HookRunner,
+    s3_uploader: Option<&dyn S3Uploader>,
     shutdown: &Option<Arc<AtomicBool>>,
 ) -> Result<RuleExecutionReport> {
     let rule_timer = Instant::now();
@@ -624,10 +687,12 @@ fn execute_single_rule(
             atime,
         };
 
-        match ActionExecutor::execute_pipeline(
+        match ActionExecutor::execute_pipeline_with_s3(
             target,
             rule,
             config.global_trash_dir.as_deref(),
+            config.s3.as_ref(),
+            s3_uploader,
             rule_dry_run,
         ) {
             Ok(action_report) => {
@@ -638,6 +703,20 @@ fn execute_single_rule(
                     "would_act"
                 } else {
                     "acted"
+                };
+                let s3_details = if let Some(rcpt) = &action_report.s3_receipt {
+                    Some(serde_json::json!({
+                        "s3_uri": rcpt.uri,
+                        "etag": rcpt.etag,
+                        "verify_mode": rcpt.verify_mode,
+                        "parts_uploaded": rcpt.parts_uploaded,
+                        "verified_size": rcpt.verified_size,
+                    }))
+                } else {
+                    action_report
+                        .remote_uri
+                        .as_ref()
+                        .map(|uri| serde_json::json!({ "s3_uri": uri, "dry_run": true }))
                 };
 
                 let mut exec_entry =
@@ -653,6 +732,9 @@ fn execute_single_rule(
                 }
                 if let Some(sha) = &action_report.sha256 {
                     exec_entry = exec_entry.with_sha256(sha);
+                }
+                if let Some(details) = s3_details.clone() {
+                    exec_entry = exec_entry.with_details(details);
                 }
                 logger.log(&exec_entry)?;
 
@@ -670,20 +752,25 @@ fn execute_single_rule(
                 if let Some(sha) = &action_report.sha256 {
                     decision_entry = decision_entry.with_sha256(sha);
                 }
+                if let Some(details) = s3_details {
+                    decision_entry = decision_entry.with_details(details);
+                }
                 logger.log(&decision_entry)?;
             }
             Err(act_err) => {
                 let err_str = act_err.to_string();
                 errors.push(err_str.clone());
-                logger.log(
-                    &AuditEntry::new(AuditEventKind::Error, run_id, rule_dry_run)
-                        .with_rule(&rule.name)
-                        .with_candidate(&candidate.path, candidate.size_bytes)
-                        .with_resolved_ts(candidate.resolved_ts)
-                        .with_decision("error")
-                        .with_duration_ms(elapsed_millis(file_timer))
-                        .with_error(&err_str),
-                )?;
+                let mut err_entry = AuditEntry::new(AuditEventKind::Error, run_id, rule_dry_run)
+                    .with_rule(&rule.name)
+                    .with_candidate(&candidate.path, candidate.size_bytes)
+                    .with_resolved_ts(candidate.resolved_ts)
+                    .with_decision("error")
+                    .with_duration_ms(elapsed_millis(file_timer))
+                    .with_error(&err_str);
+                if let FileCleanerError::S3Upload { uri, .. } = &act_err {
+                    err_entry = err_entry.with_details(serde_json::json!({ "s3_uri": uri }));
+                }
+                logger.log(&err_entry)?;
             }
         }
     }
