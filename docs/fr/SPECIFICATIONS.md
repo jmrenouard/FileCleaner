@@ -906,12 +906,12 @@ Chaque ligne d'audit est un objet JSON UTF-8 autonome terminé par `\n` et vidé
 | `decision` | `Option<String>` | `keep_floor` \| `keep_retention` \| `skip_in_use` \| `skip_hook` \| `skip_ts_parse` \| `freeze` \| `would_act` \| `acted` \| `aborted` \| `error` |
 | `in_use_reasons` | `Option<Vec<String>>` | Sondes actives déclenchées en cas de fichier occupé |
 | `actions` | `Vec<String>` | Étapes du pipeline (`RenameByDate`, `Compress(Gzip)`, `Move`, etc.) |
-| `dest_path` | `Option<String>` | Chemin résultant pour `RenameByDate`/`Compress`/`Move`/`Trash`, ou URI `s3://...` projetée/vérifiée pour `UploadS3` |
+| `dest_path` | `Option<String>` | Chemin local résultant pour `RenameByDate`/`Compress`/`Move`/`Trash`/`CopyTruncate` (`null` après l'étape terminale `Delete`) |
 | `sha256` | `Option<String>` | Empreinte SHA-256 hexadécimale vérifiée lors de `Move`/`CopyTruncate` inter-FS ou `UploadS3` |
-| `details` | `Option<serde_json::Value>` | Métadonnées d'action structurées optionnelles (pour `UploadS3` : `s3_uri`, `etag`, `verify_mode`, `parts_uploaded`, `verified_size`) |
 | `dry_run` | `bool` | Indique si le mode simulation était actif |
 | `duration_ms` | `u64` | Durée de l'opération en millisecondes |
 | `error` | `Option<String>` | Diagnostic structuré en cas d'erreur, de gel ou de règle contrainte |
+| `details` | `Option<serde_json::Value>` | Métadonnées d'action structurées optionnelles (pour `UploadS3` : `s3_uri`, `etag`, `verify_mode`, `parts_uploaded`, `verified_size` ; omis si `null`) |
 
 Exemples d'enregistrements JSONL :
 

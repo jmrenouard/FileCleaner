@@ -906,12 +906,12 @@ Every audit line is a self-contained UTF-8 JSON object terminated by `\n` and fl
 | `decision` | `Option<String>` | `keep_floor` \| `keep_retention` \| `skip_in_use` \| `skip_hook` \| `skip_ts_parse` \| `freeze` \| `would_act` \| `acted` \| `aborted` \| `error` |
 | `in_use_reasons` | `Option<Vec<String>>` | Active probe triggers when skipped in-use |
 | `actions` | `Vec<String>` | Pipeline step labels (`RenameByDate`, `Compress(Gzip)`, `Move`, etc.) |
-| `dest_path` | `Option<String>` | Output path for `RenameByDate`/`Compress`/`Move`/`Trash`, or projected/verified `s3://...` URI for `UploadS3` |
+| `dest_path` | `Option<String>` | Final local output path for `RenameByDate`/`Compress`/`Move`/`Trash`/`CopyTruncate` (`null` after terminal `Delete`) |
 | `sha256` | `Option<String>` | Lowercase hex SHA-256 digest verified during cross-FS `Move`/`CopyTruncate` or `UploadS3` |
-| `details` | `Option<serde_json::Value>` | Optional structured action metadata (for `UploadS3`: `s3_uri`, `etag`, `verify_mode`, `parts_uploaded`, `verified_size`) |
 | `dry_run` | `bool` | Whether dry-run mode was active |
 | `duration_ms` | `u64` | Operation duration in milliseconds |
 | `error` | `Option<String>` | Structured diagnostic message on error/freeze/constrained excess |
+| `details` | `Option<serde_json::Value>` | Optional structured action metadata (for `UploadS3`: `s3_uri`, `etag`, `verify_mode`, `parts_uploaded`, `verified_size`; omitted when `null`) |
 
 Example JSONL lines:
 
