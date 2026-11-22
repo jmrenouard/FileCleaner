@@ -351,17 +351,23 @@ impl HttpS3Uploader {
             for (k, v) in &signed.headers {
                 builder = builder.header(k.as_str(), v.as_str());
             }
-            let body = SendBody::from_owned_reader(file.take(req.content_length));
-            let resp = builder
-                .header("authorization", signed.authorization.as_str())
-                .send(body)
-                .map_err(|e| {
-                    RetryableError::Transient(s3_err(
-                        &req.local_path,
-                        uri,
-                        format!("PutObject transport failed: {e}"),
-                    ))
-                })?;
+            let resp = if req.content_length == 0 {
+                builder
+                    .header("authorization", signed.authorization.as_str())
+                    .send(&[][..])
+            } else {
+                let body = SendBody::from_owned_reader(file.take(req.content_length));
+                builder
+                    .header("authorization", signed.authorization.as_str())
+                    .send(body)
+            }
+            .map_err(|e| {
+                RetryableError::Transient(s3_err(
+                    &req.local_path,
+                    uri,
+                    format!("PutObject transport failed: {e}"),
+                ))
+            })?;
 
             classify_http_status(resp, "PutObject", &req.local_path, uri).map(|_| ())
         })
@@ -616,7 +622,7 @@ impl HttpS3Uploader {
                 classify_http_status(resp, "CompleteMultipartUpload", &req.local_path, uri)?;
             let resp_xml = read_bounded_body_string(&mut ok_resp, MAX_ERROR_BODY_BYTES);
             // S3 may return HTTP 200 with an embedded <Error> element during completion.
-            if resp_xml.contains("<Error>") {
+            if resp_xml.contains("<Error>") || resp_xml.contains("<Error ") {
                 let code = xml_extract_tag(&resp_xml, "Code").unwrap_or_else(|| "Unknown".into());
                 let msg = xml_extract_tag(&resp_xml, "Message").unwrap_or_default();
                 return Err(RetryableError::Transient(s3_err(
@@ -837,7 +843,15 @@ impl HttpS3Uploader {
 
 impl S3Uploader for HttpS3Uploader {
     fn upload_and_verify(&self, req: &S3UploadRequest) -> Result<S3UploadReceipt> {
-        let uri = build_s3_uri(&req.config.bucket, &req.key);
+        let clean_key = req.key.trim_matches('/');
+        if clean_key.is_empty() {
+            return Err(s3_err(
+                &req.local_path,
+                &build_s3_uri(&req.config.bucket, &req.key),
+                "S3 object key must not be empty",
+            ));
+        }
+        let uri = build_s3_uri(&req.config.bucket, clean_key);
         let raw_sha = decode_sha256_hex(&req.sha256_hex).ok_or_else(|| {
             s3_err(
                 &req.local_path,
@@ -988,9 +1002,16 @@ fn resolve_endpoint(cfg: &S3Config, key: &str, path: &Path, uri: &str) -> Result
             ));
         };
 
-        let (authority, base_path) = match rest.find('/') {
+        let (raw_authority, base_path) = match rest.find('/') {
             Some(idx) => (&rest[..idx], rest[idx..].trim_end_matches('/')),
             None => (rest, ""),
+        };
+        // Strip standard default ports (`:443` for https, `:80` for http) so the signed
+        // SigV4 `Host` header matches the exact `Host` header `ureq` transmits on the wire.
+        let authority = match scheme {
+            "https" => raw_authority.strip_suffix(":443").unwrap_or(raw_authority),
+            "http" => raw_authority.strip_suffix(":80").unwrap_or(raw_authority),
+            _ => raw_authority,
         };
         if authority.is_empty() {
             return Err(s3_err(path, uri, format!("empty host in endpoint '{ep}'")));
@@ -1266,16 +1287,27 @@ fn header_str(resp: &ureq::http::Response<ureq::Body>, name: &str) -> Option<Str
 }
 
 fn xml_extract_tag(xml: &str, tag: &str) -> Option<String> {
-    let open = format!("<{tag}>");
+    let open_prefix = format!("<{tag}");
     let close = format!("</{tag}>");
-    let start = xml.find(&open)? + open.len();
-    let end = xml[start..].find(&close)?;
-    let val = xml[start..start + end].trim();
-    if val.is_empty() {
-        None
-    } else {
-        Some(val.to_string())
+    let mut search_from = 0;
+    while let Some(rel) = xml[search_from..].find(&open_prefix) {
+        let tag_start = search_from + rel;
+        let after_name = tag_start + open_prefix.len();
+        let next_ch = xml[after_name..].chars().next()?;
+        if next_ch == '>' || next_ch.is_whitespace() {
+            let gt_rel = xml[after_name..].find('>')?;
+            let content_start = after_name + gt_rel + 1;
+            let content_end = content_start + xml[content_start..].find(&close)?;
+            let val = xml[content_start..content_end].trim();
+            return if val.is_empty() {
+                None
+            } else {
+                Some(val.to_string())
+            };
+        }
+        search_from = after_name;
     }
+    None
 }
 
 fn xml_escape(input: &str) -> String {
@@ -1723,6 +1755,47 @@ mod tests {
         let ep_cvh = resolve_endpoint(&custom_vh, "k.gz", Path::new("f"), "s3://bkt/k.gz").unwrap();
         assert_eq!(ep_cvh.host_header, "bkt.s3.internal:9000");
         assert_eq!(ep_cvh.canonical_uri, "/base/k.gz");
+
+        // Default ports (:443 on https, :80 on http) are stripped to match wire Host headers.
+        let default_https_port = S3Config {
+            bucket: "bkt".into(),
+            region: "us-east-1".into(),
+            endpoint: Some("https://s3.internal:443".into()),
+            force_path_style: true,
+            ..S3Config::default()
+        };
+        let ep_443 =
+            resolve_endpoint(&default_https_port, "k.gz", Path::new("f"), "s3://bkt/k.gz").unwrap();
+        assert_eq!(ep_443.host_header, "s3.internal");
+        assert_eq!(ep_443.url_base, "https://s3.internal/bkt/k.gz");
+
+        let default_http_port = S3Config {
+            bucket: "bkt".into(),
+            region: "us-east-1".into(),
+            endpoint: Some("http://s3.internal:80".into()),
+            force_path_style: true,
+            allow_insecure_http: true,
+            ..S3Config::default()
+        };
+        let ep_80 =
+            resolve_endpoint(&default_http_port, "k.gz", Path::new("f"), "s3://bkt/k.gz").unwrap();
+        assert_eq!(ep_80.host_header, "s3.internal");
+        assert_eq!(ep_80.url_base, "http://s3.internal/bkt/k.gz");
+
+        // XML tag extraction handles attributes and rejects empty elements.
+        assert_eq!(
+            xml_extract_tag(
+                "<Result><UploadId xmlns=\"http://s3.amazonaws.com/doc\">u-42</UploadId></Result>",
+                "UploadId"
+            )
+            .as_deref(),
+            Some("u-42")
+        );
+        assert!(xml_extract_tag("<UploadId>   </UploadId>", "UploadId").is_none());
+        assert_eq!(
+            xml_escape("a&b<\"c\">'d'"),
+            "a&amp;b&lt;&quot;c&quot;&gt;&apos;d&apos;"
+        );
     }
 
     #[test]
@@ -1865,12 +1938,52 @@ mod tests {
         ));
         assert_eq!(srv.requests.load(Ordering::SeqCst) - before, 1);
 
-        // 9. Missing env var credentials fail cleanly without hitting the network.
+        // 9. Missing env var credentials, empty key, invalid digest, and size-change mismatch fail closed.
         let mut missing_env = req.clone();
         missing_env.config.access_key_env = "FC_DEFINITELY_UNSET_AK".to_string();
         assert!(matches!(
             uploader.upload_and_verify(&missing_env),
             Err(FileCleanerError::S3Upload { .. })
         ));
+
+        let mut empty_key = req.clone();
+        empty_key.key = "///".to_string();
+        assert!(matches!(
+            uploader.upload_and_verify(&empty_key),
+            Err(FileCleanerError::S3Upload { .. })
+        ));
+
+        let mut bad_hex = req.clone();
+        bad_hex.sha256_hex = "not-valid-hex".to_string();
+        assert!(matches!(
+            uploader.upload_and_verify(&bad_hex),
+            Err(FileCleanerError::S3Upload { .. })
+        ));
+
+        srv.state.lock().unwrap().auth_403 = false;
+        let mut size_changed = ow_req.clone();
+        size_changed.content_length = len + 10;
+        assert!(matches!(
+            uploader.upload_and_verify(&size_changed),
+            Err(FileCleanerError::IntegrityMismatch { .. })
+        ));
+
+        // 10. Zero-byte object single-part upload + session token signing succeeds cleanly.
+        let empty_file = tmp.path().join("empty.dat");
+        std::fs::write(&empty_file, b"").unwrap();
+        let tok_env = "FC_TEST_S3_SESSION_TOKEN";
+        std::env::set_var(tok_env, "temp-session-token");
+        let mut empty_cfg = test_s3_config(srv.endpoint(), ak_env, sk_env);
+        empty_cfg.session_token_env = Some(tok_env.to_string());
+        let empty_req = S3UploadRequest {
+            local_path: empty_file,
+            key: "pg/empty.dat".to_string(),
+            content_length: 0,
+            sha256_hex: EMPTY_SHA256.to_string(),
+            config: empty_cfg,
+        };
+        let empty_receipt = uploader.upload_and_verify(&empty_req).unwrap();
+        assert_eq!(empty_receipt.verified_size, 0);
+        assert_eq!(empty_receipt.verified_sha256, EMPTY_SHA256);
     }
 }

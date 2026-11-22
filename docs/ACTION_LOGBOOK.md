@@ -29,7 +29,7 @@
   - [`tests/governance_and_docs_test.rs`](../tests/governance_and_docs_test.rs): Strengthened `cargo_manifest_enforces_version_and_pure_rust_contract` to inspect `Cargo.toml` and `Cargo.lock` for forbidden native/C crates and verify `ureq`/`rustls` remain off `ring` and `aws-lc-*`.
   - [`docs/RCA_REGISTER.md`](RCA_REGISTER.md): Logged `APP-003` documenting the pure-Rust `rustls-rustcrypto` TLS backend trade-off.
 - **Result**:
-  - Verified in WSL2 (`CARGO_TARGET_DIR=/tmp/filecleaner-target`): `cargo fmt --all -- --check` PASS, 3-target `cargo clippy --all-targets -- -D warnings` PASS (`0` warnings across Linux, `x86_64-pc-windows-gnu`, `aarch64-apple-darwin`), `cargo test --all-targets` PASS (`130/130`: `69` unit + `61` integration across `9` suites), and `cargo llvm-cov --all-targets --workspace --summary-only --fail-under-lines 90` PASS (`93.52%` line coverage / `91.90%` region coverage across `10,980` lines).
+  - Verified in WSL2 (`CARGO_TARGET_DIR=/tmp/filecleaner-target`): `cargo fmt --all -- --check` PASS, 3-target `cargo clippy --all-targets -- -D warnings` PASS (`0` warnings across Linux, `x86_64-pc-windows-gnu`, `aarch64-apple-darwin`), `cargo test --all-targets` PASS (`130/130`: `69` unit + `61` integration across `9` suites), and `cargo llvm-cov --all-targets --workspace --summary-only --fail-under-lines 90` PASS (`93.77%` line coverage / `92.14%` region coverage across `11,067` lines). Dedicated `/ponytail-review` caught and fixed SigV4 default-port `:443`/`:80` Host-header mismatch, empty key rejection, XML namespace attribute parsing, and 0-byte PutObject handling before merge (PR `#27`).
 
 ### ACT-010 — Add S3 Archival Config Schema, Validation Invariants, and Error Types (`Issue #24`)
 
