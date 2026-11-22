@@ -17,6 +17,20 @@
 
 ## 2. Completed Actions (`COMPLETED`)
 
+### ACT-016 — Bump Crate Version to `v1.1.0`, Synchronize Guides/CHANGELOG/RCA Register, and Verify Release Readiness (`Issue #36`)
+
+- **Date / Time (ISO)**: `2026-11-22T03:28:00Z`
+- **Issue / Branch**: `#36` (`chore/issue-36-release-v1.1.0-prep`)
+- **Request**: Prepare FileCleaner `v1.1.0` for release by bumping `Cargo.toml`/`Cargo.lock` to `1.1.0`, updating remaining bilingual user guides and README badges, cutting `## [1.1.0]` in `CHANGELOG.md`, marking `IDEA-001` shipped in `docs/RCA_REGISTER.md`, enforcing EN/FR heading parity across all 5 doc pairs in `tests/governance_and_docs_test.rs`, and running full multi-target release verification.
+- **Changes**:
+  - [`Cargo.toml`](../Cargo.toml) & [`Cargo.lock`](../Cargo.lock): Bumped package version from `1.0.1` to `1.1.0`.
+  - [`tests/governance_and_docs_test.rs`](../tests/governance_and_docs_test.rs): Updated crate version assertion to `"1.1.0"` and expanded heading parity enforcement to cover all 5 bilingual pairs (`README`, `HOWTO`, `USER_GUIDE`/`GUIDE_UTILISATEUR`, `COOKBOOK_EXAMPLES`/`EXEMPLES_RECETTES`, `SPECIFICATIONS`).
+  - [`docs/en/USER_GUIDE.md`](en/USER_GUIDE.md), [`docs/fr/GUIDE_UTILISATEUR.md`](fr/GUIDE_UTILISATEUR.md), [`docs/en/HOWTO.md`](en/HOWTO.md), [`docs/fr/HOWTO.md`](fr/HOWTO.md), [`docs/en/SPECIFICATIONS.md`](en/SPECIFICATIONS.md), [`docs/fr/SPECIFICATIONS.md`](fr/SPECIFICATIONS.md), [`docs/en/COOKBOOK_EXAMPLES.md`](en/COOKBOOK_EXAMPLES.md), [`docs/fr/EXEMPLES_RECETTES.md`](fr/EXEMPLES_RECETTES.md), [`README.md`](../README.md), [`README.fr.md`](../README.fr.md): Synchronized `v1.1.0` release tags/archives, `--profile dba-postgres`, `upload_s3`, `[s3]`/`[rules.s3]`, `INV-CFG-01..14`, `S3Upload` exit `1`, JSONL `details`, and final verified v1.1.0 test/coverage badges.
+  - [`CHANGELOG.md`](../CHANGELOG.md): Cut `## [1.1.0] - 2026-11-22` summarizing Issues `#24`–`#36`.
+  - [`docs/RCA_REGISTER.md`](RCA_REGISTER.md): Marked `IDEA-001` shipped in `v1.1.0` and moved remaining roadmap items (`IDEA-002`..`IDEA-004`) to `v1.2`.
+- **Result**:
+  - Verified in WSL2 (`CARGO_TARGET_DIR=/tmp/filecleaner-target`): `cargo fmt --all -- --check` PASS, 3-target `cargo clippy --all-targets -- -D warnings` PASS (`0` warnings across Linux, `x86_64-pc-windows-gnu`, `aarch64-apple-darwin`), `cargo test --all-targets` PASS (`135/135` active: `69` unit + `66` integration across `11` suites + `1` live 6-scenario PG17/MinIO Docker E2E test previously verified `1/1`), `cargo llvm-cov --all-targets --workspace --summary-only --fail-under-lines 90` PASS (`94.01%` line coverage / `92.08%` region coverage across `11,473` lines), and pure-Rust `cargo tree` verified zero `ring`/`cc`/`aws-lc-*`/`openssl-*` C bindings.
+
 ### ACT-015 — Document S3 Archival Sink and DBA PostgreSQL WAL Profile in Bilingual EN/FR Specs & Cookbooks (`Issue #34`)
 
 - **Date / Time (ISO)**: `2026-11-22T03:17:00Z`

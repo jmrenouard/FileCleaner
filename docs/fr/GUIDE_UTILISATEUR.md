@@ -2,7 +2,7 @@
   <img src="../assets/header-banner.svg" alt="FileCleaner — Guide Utilisateur" width="100%" />
 </div>
 
-# FileCleaner v1.0.1 — Guide Utilisateur & Manuel d'Exploitation Complet
+# FileCleaner v1.1.0 — Guide Utilisateur & Manuel d'Exploitation Complet
 
 > **Éditions linguistiques** : [English (`docs/en/USER_GUIDE.md`)](../en/USER_GUIDE.md) · **Français**  
 > **Documents associés** : [README](../../README.fr.md) · [HOWTO 5 minutes](HOWTO.md) · [Exemples & Recettes](EXEMPLES_RECETTES.md) · [Spécifications formelles](SPECIFICATIONS.md)
@@ -33,20 +33,20 @@ Téléchargez l'archive adaptée à votre système depuis [GitHub Releases](http
 
 | OS | Architecture | Cible Rust (Triple) | Archive |
 | :--- | :--- | :--- | :--- |
-| Linux (glibc) | `x86_64` | `x86_64-unknown-linux-gnu` | `filecleaner-v1.0.1-x86_64-unknown-linux-gnu.tar.gz` |
-| Linux (statique `musl`) | `x86_64` | `x86_64-unknown-linux-musl` | `filecleaner-v1.0.1-x86_64-unknown-linux-musl.tar.gz` |
-| Linux (glibc) | `ARM64` | `aarch64-unknown-linux-gnu` | `filecleaner-v1.0.1-aarch64-unknown-linux-gnu.tar.gz` |
-| Linux (statique `musl`) | `ARM64` | `aarch64-unknown-linux-musl` | `filecleaner-v1.0.1-aarch64-unknown-linux-musl.tar.gz` |
-| Linux (hard-float) | `ARMv7` | `armv7-unknown-linux-gnueabihf` | `filecleaner-v1.0.1-armv7-unknown-linux-gnueabihf.tar.gz` |
-| Windows (MSVC) | `x86_64` | `x86_64-pc-windows-msvc` | `filecleaner-v1.0.1-x86_64-pc-windows-msvc.zip` |
-| Windows (ARM64 MSVC) | `ARM64` | `aarch64-pc-windows-msvc` | `filecleaner-v1.0.1-aarch64-pc-windows-msvc.zip` |
-| macOS (Apple Silicon) | `ARM64` | `aarch64-apple-darwin` | `filecleaner-v1.0.1-aarch64-apple-darwin.tar.gz` |
-| macOS (Intel) | `x86_64` | `x86_64-apple-darwin` | `filecleaner-v1.0.1-x86_64-apple-darwin.tar.gz` |
+| Linux (glibc) | `x86_64` | `x86_64-unknown-linux-gnu` | `filecleaner-v1.1.0-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux (statique `musl`) | `x86_64` | `x86_64-unknown-linux-musl` | `filecleaner-v1.1.0-x86_64-unknown-linux-musl.tar.gz` |
+| Linux (glibc) | `ARM64` | `aarch64-unknown-linux-gnu` | `filecleaner-v1.1.0-aarch64-unknown-linux-gnu.tar.gz` |
+| Linux (statique `musl`) | `ARM64` | `aarch64-unknown-linux-musl` | `filecleaner-v1.1.0-aarch64-unknown-linux-musl.tar.gz` |
+| Linux (hard-float) | `ARMv7` | `armv7-unknown-linux-gnueabihf` | `filecleaner-v1.1.0-armv7-unknown-linux-gnueabihf.tar.gz` |
+| Windows (MSVC) | `x86_64` | `x86_64-pc-windows-msvc` | `filecleaner-v1.1.0-x86_64-pc-windows-msvc.zip` |
+| Windows (ARM64 MSVC) | `ARM64` | `aarch64-pc-windows-msvc` | `filecleaner-v1.1.0-aarch64-pc-windows-msvc.zip` |
+| macOS (Apple Silicon) | `ARM64` | `aarch64-apple-darwin` | `filecleaner-v1.1.0-aarch64-apple-darwin.tar.gz` |
+| macOS (Intel) | `x86_64` | `x86_64-apple-darwin` | `filecleaner-v1.1.0-x86_64-apple-darwin.tar.gz` |
 
 #### Installation & vérification SHA-256 sous Linux / macOS
 
 ```bash
-VERSION="v1.0.1"
+VERSION="v1.1.0"
 TARGET="x86_64-unknown-linux-musl"   # ou aarch64-apple-darwin, etc.
 
 curl -fLO "https://github.com/jmrenouard/FileCleaner/releases/download/${VERSION}/filecleaner-${VERSION}-${TARGET}.tar.gz"
@@ -61,7 +61,7 @@ filecleaner --version
 #### Installation & vérification SHA-256 sous Windows PowerShell
 
 ```powershell
-$Version = "v1.0.1"
+$Version = "v1.1.0"
 $Target  = "x86_64-pc-windows-msvc"
 $Archive = "filecleaner-$Version-$Target.zip"
 
@@ -80,7 +80,7 @@ Requiert Rust Édition 2021 (`rustc >= 1.75`). Grâce à l'absence totale de cra
 
 ```bash
 # Installation directe depuis GitHub
-cargo install --git https://github.com/jmrenouard/FileCleaner --tag v1.0.1 --locked
+cargo install --git https://github.com/jmrenouard/FileCleaner --tag v1.1.0 --locked
 
 # Ou compilation locale depuis le dépôt
 git clone https://github.com/jmrenouard/FileCleaner.git
@@ -95,10 +95,10 @@ Les images multiplateformes (`linux/amd64` et `linux/arm64`) s'exécutent sous l
 
 ```bash
 # Vérifier la version de l'image
-docker run --rm jmrenouard/filecleaner:1.0.1 --version
+docker run --rm jmrenouard/filecleaner:1.1.0 --version
 
 # Simuler un nettoyage sur un dossier hôte monté dans /data
-docker run --rm -v "$(pwd)/data:/data" jmrenouard/filecleaner:1.0.1 plan --dir /data --max-age 14d
+docker run --rm -v "$(pwd)/data:/data" jmrenouard/filecleaner:1.1.0 plan --dir /data --max-age 14d
 ```
 
 ---
@@ -127,18 +127,19 @@ Génère un modèle de configuration commenté avec des réglages sûrs (`dry_ru
 | Option | Défaut | Description |
 | :--- | :--- | :--- |
 | `-o, --output <PATH>` | `./filecleaner.toml` (ou `.yaml`) | Chemin cible écrit atomiquement via `.fc-tmp`. |
-| `--profile <PROFILE>` | `backups` | Profil de modèle de départ : `backups`, `logs` ou `spool`. |
+| `--profile <PROFILE>` | `backups` | Profil de modèle de départ : `backups`, `logs`, `spool` ou `dba-postgres`. |
 | `--format <FMT>` | Auto / `toml` | Format souhaité : `toml` ou `yaml` (déduit de `--output` si omis). |
 | `--force` | `false` | Écrase un fichier existant à l'emplacement `--output`. |
 
 ```bash
 filecleaner init --output /etc/filecleaner/filecleaner.toml --profile backups --format toml
+filecleaner init --output /etc/filecleaner/pg-wal-s3.toml --profile dba-postgres --format toml
 filecleaner init --output /etc/filecleaner/filecleaner.yaml --profile logs --format yaml --force
 ```
 
 #### `filecleaner validate [PATH]`
 
-Analyse `.toml`/`.yaml`/`.yml`, contrôle les unités d'octets et de durées, compile les globs, regex et formats `strftime`, puis vérifie les 12 invariants `INV-CFG-*`. N'accède jamais au contenu des répertoires surveillés.
+Analyse `.toml`/`.yaml`/`.yml`, contrôle les unités d'octets et de durées, compile les globs, regex et formats `strftime`, puis vérifie les 14 invariants `INV-CFG-*`. N'accède jamais au contenu des répertoires surveillés.
 
 | Option | Description |
 | :--- | :--- |
@@ -242,7 +243,7 @@ fi
 | Code de sortie | Signification et contrat d'automatisation |
 | :---: | :--- |
 | **`0`** | Succès (`run`, `plan`, `validate`, `init`, arrêt propre `daemon run`, `daemon status` actif, `daemon stop` achevé), **ou** `check-in-use` confirme que le fichier est **SÛR (inactif)**. Les sauts volontaires de hook (`skip_exit_code = 42`) et les règles `Frozen`/`Constrained` non strictes retournent également `0`. |
-| **`1`** | Erreur d'I/O opérationnelle, divergence `IntegrityMismatch` lors d'un `Move` inter-FS, échec de hook `AbortFile`/`AbortRule`, erreur de compression ou `TimestampUnsupported` en passe réelle. |
+| **`1`** | Erreur d'I/O opérationnelle, échec `S3Upload`, divergence `IntegrityMismatch` lors d'un `Move` inter-FS ou d'une vérification SHA-256 S3, échec de hook `AbortFile`/`AbortRule`, erreur de compression ou `TimestampUnsupported` en passe réelle. |
 | **`2`** | Erreur de syntaxe CLI, extension de configuration non supportée (`.toml`/`.yaml`/`.yml` requis) ou violation d'invariant `INV-CFG-*`. |
 | **`3`** | Garde de sûreté déclenchée en mode strict : gel `BackupGuard` sous `--fail-on-freeze`, **ou** règle `Constrained` sous `--strict-constraints`. Idéal pour déclencher une alerte de supervision. |
 | **`4`** | Erreur de cycle de vie du démon (`daemon run` bloqué par un `pid_file` actif, `daemon status` arrêté/obsolète, délai dépassé sur `daemon stop`). |
@@ -263,6 +264,7 @@ Toutes les énumérations Rust se sérialisent en `snake_case` par défaut tout 
 | `dry_run` | `bool` | `false` | Interrupteur global de simulation empêchant toute mutation disque sur toutes les règles. |
 | `audit_log` | `Option<PathBuf>` | `None` | Raccourci racine pour le chemin du journal JSONL (`[audit].log_path` est prioritaire si les deux sont définis). |
 | `global_trash_dir` | `Option<PathBuf>` | `None` | Répertoire de quarantaine par défaut utilisé par `actions = [..., "trash"]` sans `trash_dir` local. |
+| `s3` | `Option<S3Config>` | `None` | Bloc d'archivage S3 / compatible S3 par défaut utilisé par `"upload_s3"` sans `[rules.s3]` local. Identifiants exclusivement par variables d'environnement (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`). |
 | `daemon` | `DaemonConfig` | Défaut `DaemonConfig` | Mode de planification, période, anti-rebond *watcher* et chemins PID/état/arrêt. |
 | `audit` | `AuditConfig` | Défaut `AuditConfig` | Journalisation d'audit structurée (`log_path`, `jsonl` à `true` par défaut). |
 | `rules` | `Vec<RuleConfig>` | **Obligatoire (non vide)** | Liste ordonnée des règles indépendantes de rétention. |
@@ -312,7 +314,7 @@ Toutes les énumérations Rust se sérialisent en `snake_case` par défaut tout 
 | `combine_mode` | `CombineMode` | `"any"` | `"any"` (OU : évince dès qu'un seuil actif est dépassé) ou `"all"` (ET : évince uniquement si tous les seuils actifs sont dépassés simultanément). |
 | `eviction_order` | `EvictionOrder` | `"oldest_first"` | `"oldest_first"` ($t(f)$ croissant) ou `"largest_first"` (`size(f)` décroissant, départage au plus ancien). |
 | `dry_run` | `bool` | `false` | Force le mode simulation uniquement sur cette règle. |
-| `actions` | `Vec<ActionStep>` | `["delete"]` | Étapes ordonnées : `"rename_by_date"`, `"compress"`, `"move"`, `"copy_truncate"`, `"trash"`, `"delete"`. Les actions terminales (`trash`, `delete`) doivent être en fin de liste. |
+| `actions` | `Vec<ActionStep>` | `["delete"]` | Étapes ordonnées : `"rename_by_date"`, `"compress"`, `"move"`, `"copy_truncate"`, `"upload_s3"`, `"trash"`, `"delete"`. Les actions terminales (`trash`, `delete`) doivent être en fin de liste. |
 | `move_to` | `Option<PathBuf>` | `None` | Répertoire cible exigé lorsque `actions` contient `"move"`. |
 | `move_date_subdir` | `Option<String>` | `None` | Sous-répertoire `strftime` optionnel sous `move_to` (ex. `"%Y/%m"`). |
 | `move_overwrite` | `bool` | `false` | Autorise l'écrasement d'une cible existante lors de `move`. |
@@ -326,6 +328,7 @@ Toutes les énumérations Rust se sérialisent en `snake_case` par défaut tout 
 | `backup_guard` | `BackupGuardConfig` | Défaut | Plancher de sauvegarde et gel sur vétusté (§4). |
 | `in_use` | `InUseConfig` | Défaut | Contrôles de détection active en 6 couches (§5). |
 | `pre_delete_hook` | `Option<HookConfig>` | `None` | Alias : `pre_hook`. Commande externe synchrone de veto (§6). |
+| `s3` | `Option<S3Config>` | `None` | Surcharge d'archivage S3 propre à la règle (`bucket`, `region`, `endpoint`, `prefix`, `key_date_subdir`, `force_path_style`, `allow_insecure_http`, `overwrite`, `verify_mode`, noms de variables d'environnement, `timeout`, `max_retries`, `multipart_part_size`). |
 
 ### 3.5 Unités d'octets et de durées lisibles
 
@@ -338,15 +341,16 @@ Toutes les énumérations Rust se sérialisent en `snake_case` par défaut tout 
 
 - `ms` ($1\text{ ms}$), `s` ($1{,}000\text{ ms}$), `m` ($60{,}000\text{ ms}$), `h` ($3{,}600{,}000\text{ ms}$), `d` ($24\text{ h}$), `w` ($7\text{ d}$).
 
-### 3.6 Garde-fous de validation statique (`INV-CFG-01` .. `INV-CFG-12`)
+### 3.6 Garde-fous de validation statique (`INV-CFG-01` .. `INV-CFG-14`)
 
-`filecleaner validate` impose douze contrôles structurels avant toute exploration disque :
+`filecleaner validate` impose quatorze contrôles structurels avant toute exploration disque :
 
 - **Non-vacuité & Unicité** : `rules` non vide, `rule.name` unique et non vide, `rule.path` non vide, `rule.actions` non vide, `daemon.interval > 0`.
 - **Cohérence des bornes** : `min_file_size <= max_file_size` ; `max_files >= backup_guard.min_keep_files`.
-- **Motifs et formats valides** : Tous les globs (`include_globs`, `exclude_globs`), regex (`include_regex`, `exclude_regex`, `filename_date_regex`) et formats `strftime` (`filename_date_format`, `move_date_subdir`) doivent compiler proprement ; `time_basis = "filename_date"` exige à la fois regex et format.
-- **Destinations requises & Terminaison** : `move` exige `move_to` ; `copy_truncate` exige `copy_truncate_to` ou `move_to` ; `trash` exige `trash_dir` ou `global_trash_dir`. Aucune étape ne peut suivre `delete` ou `trash`.
+- **Motifs et formats valides** : Tous les globs (`include_globs`, `exclude_globs`), regex (`include_regex`, `exclude_regex`, `filename_date_regex`) et formats `strftime` (`filename_date_format`, `move_date_subdir`, `rename_template`, `s3.key_date_subdir`) doivent compiler proprement ; `time_basis = "filename_date"` exige à la fois regex et format.
+- **Destinations requises & Terminaison** : `move` exige `move_to` ; `copy_truncate` exige `copy_truncate_to` ou `move_to` ; `trash` exige `trash_dir` ou `global_trash_dir` ; `upload_s3` exige `rule.s3` ou `[s3]` global. Aucune étape ne peut suivre `delete` ou `trash`.
 - **Garde d'auto-inclusion récursive (`INV-CFG-09`)** : Si `recursive = true`, `move_to`, `copy_truncate_to` et `trash_dir` **ne peuvent pas** pointer sur ou dans `rule.path` sauf exclusion explicite dans `exclude_globs` ou `exclude_regex`, évitant toute boucle infinie de déplacement-réindexation.
+- **Transport S3 & secrets par variables d'environnement (`INV-CFG-13`..`INV-CFG-14`)** : `s3.endpoint` impose `https://` sauf `allow_insecure_http = true`, `multipart_part_size` reste dans `[5 MiB, 5 GiB]`, `timeout > 0`, et `access_key_env`/`secret_key_env`/`session_token_env` doivent être des noms de variables POSIX valides (zéro secret en clair).
 
 ---
 
@@ -449,6 +453,7 @@ Les étapes de `rule.actions` s'exécutent strictement dans l'ordre en propagean
 | `compress` | Codecs pure-Rust : `gzip` (`.gz`), `lz4` (`.lz4`), `brotli` (`.br`), `zip` (`.zip`). Paramètres : `compression`, `compression_level`, `compress_remove_source`, `compress_overwrite`. | Écrit dans `<dest>.fc-tmp...`, vide le flux + `sync_all()`, restaure `atime`/`mtime` via `std::fs::FileTimes`, renomme atomiquement vers `<dest>`, puis supprime la source si `compress_remove_source = true`. |
 | `move` | Déplace `WorkingTarget` vers `move_to` (plus sous-dossier `strftime` `move_date_subdir`). Paramètre : `move_overwrite`. | Voie rapide `rename` sur même FS ; en inter-FS (`EXDEV`), copie en flux dans `<dest>.fc-tmp...`, `sync_all()`, **relit `<dest>.fc-tmp...` sur disque pour vérifier le SHA-256**, restaure dates (`std::fs::FileTimes`) et permissions, renomme atomiquement, puis supprime la source. |
 | `copy_truncate` | **Activation explicite** (*opt-in*) pour journaux ouverts en ajout continu (`copy_truncate_to` ou `move_to`, `compression` optionnelle). | Archive et vérifie sur `.fc-tmp` **avant** `file.set_len(0)` + `sync_all()` (conserve chemin et inode). Émet un avertissement `validate` concernant la fenêtre entre fin de copie et troncature. |
+| `upload_s3` | Téléversement AWS SigV4 pure-Rust vers S3 / MinIO / Ceph RGW / R2 (`[s3]` ou `[rules.s3]`, identifiants par variables d'environnement, mono-partie ou multipart en flux). | Ouvre la cible sans suivi de liens symboliques, vérifie l'anti-écrasement (`HeadObject`), et impose la parité distante `x-amz-checksum-sha256` (`checksum_sha256`) ou relecture en flux `GetObject` (`readback_sha256`) **avant** tout `delete`/`trash`/`move` ultérieur. |
 | `trash` | Place le fichier en quarantaine dans `trash_dir` ou `global_trash_dir`. | Désambiguïse les collisions (`_1`, `_2`, ...) ; vérification SHA-256 appliquée en traversée inter-FS. |
 | `delete` | Supprime définitivement `WorkingTarget` (`remove_file`). | Étape terminale (`trash` et `delete` doivent toujours figurer en dernier). |
 
@@ -468,7 +473,8 @@ Champs clés :
 
 - `event` : `sweep_start` | `sweep_end` | `file_decision` | `backup_freeze` | `rule_constrained` | `hook_exec` | `action_exec` | `error`
 - `decision` : `keep_floor` | `keep_retention` | `skip_in_use` | `skip_hook` | `skip_ts_parse` | `freeze` | `would_act` | `acted` | `aborted` | `error`
-- `sha256` : Renseigné dès qu'une étape inter-FS `move` ou `copy_truncate` valide l'intégrité binaire.
+- `sha256` : Renseigné dès qu'une étape inter-FS `move`, `copy_truncate` ou `upload_s3` valide l'intégrité binaire.
+- `details` : Objet de métadonnées structurées émis pour `upload_s3` (`s3_uri`, `etag`, `verify_mode`, `parts_uploaded`, `verified_size` ; ou `{ s3_uri, dry_run: true }` en simulation).
 
 ### 8.2 Fichier d'état JSON temps réel du démon (`[daemon].state_file`)
 

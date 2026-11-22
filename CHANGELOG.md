@@ -10,6 +10,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ---
 
+## [1.1.0] - 2026-11-22
+
+### Added
+
+- **Pure-Rust S3 / S3-Compatible Archival Sink (`IDEA-001`, Issues `#24`, `#26`, `#28`)**:
+  - Added non-terminal `ActionStep::UploadS3` (`upload_s3`), `S3VerifyMode` (`checksum_sha256` default, `readback_sha256`), `S3Config` (global `[s3]` and per-rule `[rules.s3]` resolved via `Config::effective_s3`), `FileCleanerError::S3Upload` (exit `1`), and static validation invariants `INV-CFG-08`/`10`/`13`/`14` (`src/config.rs`, `src/error.rs`).
+  - Implemented `src/s3.rs` (`S3Uploader`, `HttpS3Uploader`, `RedactedSecret`) on a 100% pure-Rust stack (`ureq` v3 `default-features = false`, `rustls` v0.23 `default-features = false`, `rustls-rustcrypto`, `hmac`, `base64`) preserving `IMP-001` (zero C/C++ `*-sys`, `ring`, `aws-lc-*`, or `openssl-*` across all 9 release targets).
+  - Enforced AWS Signature Version 4 (`AWS4-HMAC-SHA256`), streaming single-part `PutObject` and S3 Multipart Upload (`CreateMultipartUpload` / `UploadPart` / `CompleteMultipartUpload` with HTTP-200 `<Error>` inspection and automatic `AbortMultipartUpload`), non-overwrite `HeadObject` preflight, bounded `5xx` retries, and fail-closed SHA-256 verification (`HeadObject` `x-amz-checksum-mode: ENABLED` with composite `<b64>-<N>` matching, or streaming `GetObject` `readback_sha256`) before any local `Delete`, `Trash`, or `Move` executes.
+  - Integrated `UploadS3` into `ActionExecutor::execute_pipeline_with_s3` (`src/actions.rs`) with TOCTOU-safe `open_regular_nofollow_read`, zero-I/O dry-run URI projection, `SweepEngine::run_config_with_s3` (`src/engine.rs`), structured JSONL `sha256` & `details` (`s3_uri`, `etag`, `verify_mode`, `parts_uploaded`, `verified_size`), and loopback integration suite (`tests/s3_archival_sink_test.rs`).
+- **DBA PostgreSQL WAL & Base-Backup Retention Profile (Issue `#30`)**:
+  - Added `filecleaner init --profile dba-postgres` (TOML and YAML, `dry_run = true`) in `src/cli.rs`.
+  - Shipped validated production examples `examples/dba-postgres-wal-s3.toml` and `examples/dba-postgres-wal-s3.yaml`, plus executable PITR/standby-replica boundary pre-delete hook `examples/hooks/verify_pg_wal_safe.sh` (`export LC_ALL=C`, exit `42` veto on held/protected/non-WAL artifacts, fail-closed exit `1` on malformed markers).
+  - Added end-to-end DBA workflow verification (`howto_workflow_5_dba_postgres_wal_and_base_backups_s3_archival_and_pitr_guards`) in `tests/product_workflows_e2e_test.rs`.
+- **Reproducible Live Docker E2E Verification Harness (Issue `#32`)**:
+  - Delivered `scripts/e2e-dba-s3-lab.sh` and `tests/e2e_dba_s3_docker_test.rs` exercising all 6 DBA PostgreSQL 17 (`postgres:17-bookworm`, compatible with `jmrenouard/multi-db-docker-env`) + pinned MinIO (`pgsty/minio:RELEASE.2026-08-04T00-00-00Z`) scenarios live, including real 16 MiB WAL archival, active-writer `check-in-use` exit `10`, MinIO outage and corrupt-checksum fault injection, 0-byte stub `--fail-on-freeze` exit `3`, and MinIO download + SHA-256 `audit.jsonl` parity + full 253-row PostgreSQL 17 restore.
+- **Synchronized Bilingual EN/FR Documentation & Governance (Issues `#34`, `#36`)**:
+  - Updated `docs/en/SPECIFICATIONS.md`, `docs/fr/SPECIFICATIONS.md`, `docs/en/COOKBOOK_EXAMPLES.md`, `docs/fr/EXEMPLES_RECETTES.md` (Recipe 5), `docs/en/USER_GUIDE.md`, `docs/fr/GUIDE_UTILISATEUR.md`, `docs/en/HOWTO.md`, `docs/fr/HOWTO.md`, `README.md`, and `README.fr.md` with automated heading parity across all 5 EN/FR pairs in `tests/governance_and_docs_test.rs`.
+  - Marked `IDEA-001` shipped in `docs/RCA_REGISTER.md` (`APP-003`, `RCA-009`) and logged `ACT-010`..`ACT-016` in `docs/ACTION_LOGBOOK.md`.
+
+---
+
 ## [1.0.1] - 2026-11-20
 
 ### Added & Hardened

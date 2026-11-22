@@ -1,4 +1,4 @@
-# FileCleaner v1.0.1 — Guide Pratique Simple en 5 Minutes (HOWTO)
+# FileCleaner v1.1.0 — Guide Pratique Simple en 5 Minutes (HOWTO)
 
 > **Éditions linguistiques** : [English (`docs/en/HOWTO.md`)](../en/HOWTO.md) · **Français**  
 > **Documents associés** : [README](../../README.fr.md) · [Guide utilisateur](GUIDE_UTILISATEUR.md) · [Exemples & Recettes](EXEMPLES_RECETTES.md) · [Spécifications formelles](SPECIFICATIONS.md)
@@ -84,8 +84,9 @@ Pour gérer plusieurs dossiers ou des passages planifiés reproductibles, utilis
 ### 3.1 Générer un modèle prêt à l'emploi (`init`)
 
 ```bash
-# Génère un modèle TOML ou YAML (profils `backups`, `logs` ou `spool`)
+# Génère un modèle TOML ou YAML (profils `backups`, `logs`, `spool` ou `dba-postgres`)
 filecleaner init --profile backups --format toml --output filecleaner.toml
+filecleaner init --profile dba-postgres --format toml --output pg-wal-s3.toml
 ```
 
 > [!IMPORTANT]
@@ -258,7 +259,7 @@ filecleaner daemon service-template --init-system systemd --config /etc/fileclea
 | Code | Signification | Quand il apparaît |
 | :--- | :--- | :--- |
 | `0` | Succès | Passage terminé normalement (y compris veto propre `skip_exit_code = 42` et contrainte souple). |
-| `1` | Erreur opérationnelle | Dossier racine absent/illisible, erreur E/S, collision cible ou hook `abort_rule`. |
+| `1` | Erreur opérationnelle | Dossier racine absent/illisible, erreur E/S, collision cible, échec d'envoi/vérification SHA-256 S3 ou hook `abort_rule`. |
 | `2` | Erreur config / CLI | Syntaxe TOML/YAML invalide, regex/glob/strftime erroné, option manquante, échec `validate`. |
 | `3` | Arrêt politique stricte | Gel backup avec `--fail-on-freeze`, ou plancher/verrou bloquant avec `--strict-constraints`. |
 | `4` | Conflit / démon arrêté | Verrou PID déjà actif ou `daemon status` sur un démon arrêté. |

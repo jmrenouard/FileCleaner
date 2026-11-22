@@ -2,7 +2,7 @@
   <img src="../assets/header-banner.svg" alt="FileCleaner — Deterministic Rust Retention Engine" width="100%" />
 </div>
 
-# FileCleaner v1.0.1 — Formal Technical Specifications & Engineering Architecture
+# FileCleaner v1.1.0 — Formal Technical Specifications & Engineering Architecture
 
 > **Language Editions**: **English (Normative)** · [Français (`docs/fr/SPECIFICATIONS.md`)](../fr/SPECIFICATIONS.md)  
 > **Related Governance Documents**: [Dev-Team Alignment Session](../team-sessions/team-session-2026-11-20.md) · [Action Logbook](../ACTION_LOGBOOK.md) · [RCA Register](../RCA_REGISTER.md)
@@ -27,7 +27,7 @@
 
 ### 1.1 Purpose & Scope
 
-**FileCleaner** (`filecleaner` v1.0.1, Rust Edition 2021, Apache-2.0) is a deterministic, cross-platform directory retention, backup safety guardrail, active-file probe, lifecycle transformation, and daemon scheduling engine. It replaces fragile ad-hoc shell scripts (`find ... -delete`, platform-locked `logrotate`) with a mathematically specified, fail-closed pipeline engineered for zero silent data loss across production servers, backup vaults, and developer workstations.
+**FileCleaner** (`filecleaner` v1.1.0, Rust Edition 2021, Apache-2.0) is a deterministic, cross-platform directory retention, backup safety guardrail, active-file probe, lifecycle transformation, and daemon scheduling engine. It replaces fragile ad-hoc shell scripts (`find ... -delete`, platform-locked `logrotate`) with a mathematically specified, fail-closed pipeline engineered for zero silent data loss across production servers, backup vaults, and developer workstations.
 
 ### 1.2 Zero-Silent-Data-Loss Philosophy & Strict 6-Phase Pipeline
 

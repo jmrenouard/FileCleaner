@@ -1,4 +1,4 @@
-# FileCleaner v1.0.1 — Simple 5-Minute HOWTO
+# FileCleaner v1.1.0 — Simple 5-Minute HOWTO
 
 > **Language Editions**: **English** · [Français (`docs/fr/HOWTO.md`)](../fr/HOWTO.md)  
 > **Related Docs**: [README](../../README.md) · [User Guide](USER_GUIDE.md) · [Cookbook Examples](COOKBOOK_EXAMPLES.md) · [Formal Specifications](SPECIFICATIONS.md)
@@ -84,8 +84,9 @@ When you manage multiple directories or want repeatable schedules, create a conf
 ### 3.1 Generate a Starter Config Safely (`init`)
 
 ```bash
-# Generate a TOML or YAML starter config (`backups`, `logs`, or `spool` profile)
+# Generate a TOML or YAML starter config (`backups`, `logs`, `spool`, or `dba-postgres` profile)
 filecleaner init --profile backups --format toml --output filecleaner.toml
+filecleaner init --profile dba-postgres --format toml --output pg-wal-s3.toml
 ```
 
 > [!IMPORTANT]
@@ -258,7 +259,7 @@ filecleaner daemon service-template --init-system systemd --config /etc/fileclea
 | Exit Code | Meaning | When You See It |
 | :--- | :--- | :--- |
 | `0` | Success | Sweep completed cleanly (including benign `skip_exit_code = 42` vetoes and soft constraints). |
-| `1` | Operational error | Unreadable root directory, I/O error, destination collision, or hook `abort_rule`. |
+| `1` | Operational error | Unreadable root directory, I/O error, destination collision, S3 upload/SHA-256 verification failure, or hook `abort_rule`. |
 | `2` | Config or usage error | Invalid TOML/YAML syntax, bad regex/glob/strftime template, missing CLI flags, `validate` failure. |
 | `3` | Strict policy halt | Backup freeze hit with `--fail-on-freeze`, or floor/lock blocked target with `--strict-constraints`. |
 | `4` | Daemon conflict/stopped | Duplicate daemon PID lock or `daemon status` while daemon is not running. |
