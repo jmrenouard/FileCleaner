@@ -11,6 +11,7 @@
 [![Release](https://img.shields.io/github/v/release/jmrenouard/FileCleaner?style=flat-square&logo=github&color=0ea5e9)](https://github.com/jmrenouard/FileCleaner/releases)
 [![Docker Hub](https://img.shields.io/docker/v/jmrenouard/filecleaner?sort=semver&style=flat-square&logo=docker&color=2563eb&label=Docker%20Hub)](https://hub.docker.com/r/jmrenouard/filecleaner)
 [![CI](https://github.com/jmrenouard/FileCleaner/actions/workflows/ci.yml/badge.svg)](https://github.com/jmrenouard/FileCleaner/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/Docs-filecleaner.lightpath.fr-0ea5e9?style=flat-square&logo=materialformkdocs)](https://filecleaner.lightpath.fr/)
 [![Pure Rust](https://img.shields.io/badge/Rust-2021_Pure--Rust-10b981?style=flat-square&logo=rust)](Cargo.toml)
 [![Tests](https://img.shields.io/badge/Tests-135_Réussis_%2B_E2E_Live-3b82f6?style=flat-square)](docs/ACTION_LOGBOOK.md)
 [![Couverture](https://img.shields.io/badge/Couverture-94.01%25_llvm--cov-10b981?style=flat-square)](docs/ACTION_LOGBOOK.md)
@@ -43,12 +44,13 @@
 
 | Pilier | Édition Française | English Edition |
 | :--- | :--- | :--- |
+| **Portail documentaire versionné** | [**Portail MkDocs en ligne (`https://filecleaner.lightpath.fr/`)**](https://filecleaner.lightpath.fr/) · [**Accueil Diátaxis (`docs/index.md`)**](docs/index.md) | [**Online MkDocs Portal (`https://filecleaner.lightpath.fr/`)**](https://filecleaner.lightpath.fr/) · [**Diátaxis Home (`docs/index.md`)**](docs/index.md) |
+| **1. Tutoriels (`docs/01-tutorials/`)** | [**Index Tutoriels (`docs/01-tutorials/index.md`)**](docs/01-tutorials/index.md) · [**HOWTO 5 minutes (`docs/fr/HOWTO.md`)**](docs/fr/HOWTO.md) | [**Tutorials Index (`docs/01-tutorials/index.md`)**](docs/01-tutorials/index.md) · [**5-Minute HOWTO (`docs/en/HOWTO.md`)**](docs/en/HOWTO.md) |
+| **2. Guides pratiques (`docs/02-how-to-guides/`)** | [**Index Guides pratiques (`docs/02-how-to-guides/index.md`)**](docs/02-how-to-guides/index.md) · [**Exemples & Recettes (`docs/fr/EXEMPLES_RECETTES.md`)**](docs/fr/EXEMPLES_RECETTES.md) | [**How-To Guides Index (`docs/02-how-to-guides/index.md`)**](docs/02-how-to-guides/index.md) · [**Cookbook Examples (`docs/en/COOKBOOK_EXAMPLES.md`)**](docs/en/COOKBOOK_EXAMPLES.md) |
+| **3. Référence (`docs/03-reference/`)** | [**Index Référence (`docs/03-reference/index.md`)**](docs/03-reference/index.md) · [**Guide utilisateur (`docs/fr/GUIDE_UTILISATEUR.md`)**](docs/fr/GUIDE_UTILISATEUR.md) | [**Reference Index (`docs/03-reference/index.md`)**](docs/03-reference/index.md) · [**User Guide (`docs/en/USER_GUIDE.md`)**](docs/en/USER_GUIDE.md) |
+| **4. Explications (`docs/04-explanation/`)** | [**Index Explications (`docs/04-explanation/index.md`)**](docs/04-explanation/index.md) · [**Spécifications formelles (`docs/fr/SPECIFICATIONS.md`)**](docs/fr/SPECIFICATIONS.md) | [**Explanation Index (`docs/04-explanation/index.md`)**](docs/04-explanation/index.md) · [**Formal Specifications (`docs/en/SPECIFICATIONS.md`)**](docs/en/SPECIFICATIONS.md) |
 | **Présentation & Démarrage** | [**`README.fr.md`**](README.fr.md) | [**`README.md`**](README.md) |
-| **Guide Pratique 5 Minutes** | [**HOWTO 5 minutes (`docs/fr/HOWTO.md`)**](docs/fr/HOWTO.md) | [**5-Minute HOWTO (`docs/en/HOWTO.md`)**](docs/en/HOWTO.md) |
-| **Manuel d'exploitation & CLI** | [**Guide utilisateur (`docs/fr/GUIDE_UTILISATEUR.md`)**](docs/fr/GUIDE_UTILISATEUR.md) | [**User Guide (`docs/en/USER_GUIDE.md`)**](docs/en/USER_GUIDE.md) |
-| **Recettes de production** | [**Exemples & Recettes (`docs/fr/EXEMPLES_RECETTES.md`)**](docs/fr/EXEMPLES_RECETTES.md) | [**Cookbook Examples (`docs/en/COOKBOOK_EXAMPLES.md`)**](docs/en/COOKBOOK_EXAMPLES.md) |
-| **Architecture & Mathématiques** | [**Spécifications formelles (`docs/fr/SPECIFICATIONS.md`)**](docs/fr/SPECIFICATIONS.md) | [**Formal Specifications (`docs/en/SPECIFICATIONS.md`)**](docs/en/SPECIFICATIONS.md) |
-| **Journal des versions** | [**`CHANGELOG.md`**](CHANGELOG.md) | [**`CHANGELOG.md`**](CHANGELOG.md) |
+| **Journal des versions** | [**`CHANGELOG.md`**](CHANGELOG.md) · [**Notes de version v1.0.1 (`docs/RELEASE_NOTES_v1.0.1.md`)**](docs/RELEASE_NOTES_v1.0.1.md) | [**`CHANGELOG.md`**](CHANGELOG.md) · [**Release Notes v1.0.1 (`docs/RELEASE_NOTES_v1.0.1.md`)**](docs/RELEASE_NOTES_v1.0.1.md) |
 | **Traçabilité d'ingénierie** | [**Journal d'actions (`docs/ACTION_LOGBOOK.md`)**](docs/ACTION_LOGBOOK.md) · [**Registre RCA (`docs/RCA_REGISTER.md`)**](docs/RCA_REGISTER.md) · [**Session d'alignement (`docs/team-sessions/team-session-2026-11-20.md`)**](docs/team-sessions/team-session-2026-11-20.md) | — |
 
 ---
