@@ -178,6 +178,23 @@
 
 ---
 
+### RCA-010 — Pre-Existing `docs/en/HOWTO.md` Double-Prefix Links Inside `docs/RELEASE_NOTES_v1.0.1.md` Caught by Diátaxis Link Gate (`Issue #38`)
+
+- **Date / Linked Action**: `2026-11-23` (`ACT-017` / Issue `#38`)
+- **Observed Symptom**:
+  - Running `diataxis_check.py docs --strict --check-ste --lang en` and `mkdocs build --strict` against `v1.0.1` surfaced two broken relative links on line 37 of [`docs/RELEASE_NOTES_v1.0.1.md`](RELEASE_NOTES_v1.0.1.md): `docs/en/HOWTO.md` and `docs/fr/HOWTO.md` resolved relative to `docs/` as `docs/docs/en/HOWTO.md` and `docs/docs/fr/HOWTO.md`.
+- **Root Cause Analysis (5 Whys)**:
+  1. *Why did those links resolve to `docs/docs/...`?* Because `docs/RELEASE_NOTES_v1.0.1.md` lives inside `docs/` yet used repository-root paths (`docs/en/HOWTO.md`, `docs/fr/HOWTO.md`) instead of relative `en/HOWTO.md` and `fr/HOWTO.md`.
+  2. *Why was this undetected during `v1.0.1`?* Because prior governance tests checked Markdown LaTeX syntax, workflow SHAs, and EN/FR heading parity without resolving every Markdown relative link across `docs/**/*.md` or compiling `mkdocs build --strict`.
+- **Applied Change / Fix**:
+  - Fixed [`docs/RELEASE_NOTES_v1.0.1.md`](RELEASE_NOTES_v1.0.1.md) on `main` to link cleanly to `en/HOWTO.md` and `fr/HOWTO.md`.
+  - Added `docs/docs/` link normalization inside [`scripts/mkdocs_hooks.py`](../scripts/mkdocs_hooks.py) so the immutable historical `v1.0.1` Git tag snapshot still passes `mkdocs build --strict` cleanly without rewriting Git tag history.
+  - Added `test_zero_broken_relative_links_across_all_docs` in [`tests/test_diataxis_documentation.py`](../tests/test_diataxis_documentation.py) and `docs-ci.yml` to block future broken doc links before merge.
+- **Result & Non-Regression Test**:
+  - `diataxis_check.py docs --strict --check-ste --lang en`, `pytest tests/test_diataxis_documentation.py tests/test_mkdocs_publishing.py -v`, and multi-version `scripts/build_versioned_docs.py` (`main`, `v1.0.1`, `v1.0.0`) verify zero broken relative links on both `main` and immutable historical release tags.
+
+---
+
 ## 2. Technical Dead-Ends & Abandoned Leads (`IMP`)
 
 ### IMP-001 — C/C++ `-sys` Compression Bindings (`zstd-sys`, `liblz4-sys`, `bzip2-sys`, `zlib-ng-sys`) vs. Pure-Rust Compression Crates
@@ -252,6 +269,18 @@
   - Guarantees deterministic single-binary cross-compilation without C cross-compilers or assembler toolchains while supporting standard TLS 1.2/1.3 endpoints including AWS S3 RSA certificates and MinIO TLS gateways. Slightly lower raw TLS throughput than hand-tuned C assembly (`aws-lc-rs`) is negligible compared to WAN/LAN S3 archival I/O.
 - **Removal Condition**:
   - Upgrade `rustls-rustcrypto` to a stable `0.1.x` / `1.0.x` release once published by the RustCrypto organization, without reintroducing C/C++ build dependencies.
+
+---
+
+### APP-004 — Immutable Git Tag Overlay (`git archive` + Fallback Quadrant Routing) for Pre-MkDocs Releases `v1.0.0` & `v1.0.1`
+
+- **Target Scope**: [`scripts/build_versioned_docs.py`](../scripts/build_versioned_docs.py), [`scripts/mkdocs_hooks.py`](../scripts/mkdocs_hooks.py), [`mkdocs.yml`](../mkdocs.yml).
+- **Nature of the Approximation**:
+  - Release tags `v1.0.0` and `v1.0.1` predate MkDocs Material, Diátaxis quadrant directories (`docs/01-tutorials/`..`docs/04-explanation/`), and `docs/index.md` (`v1.0.0` also lacks `docs/en/HOWTO.md`). Rather than mutating immutable release tags, `scripts/build_versioned_docs.py` extracts each tag via `git archive`, overlays current `mkdocs.yml`, `scripts/mkdocs_hooks.py`, `docs/stylesheets/extra.css`, `docs/javascripts/katex.js`, and fallback portal assets (`docs/index.md`, `docs/assets/*.svg`), while `scripts/mkdocs_hooks.py` prunes missing `nav:` entries and routes missing quadrant links on historical snapshots to equivalent legacy guides (`en/HOWTO.md`, `en/COOKBOOK_EXAMPLES.md`, `en/USER_GUIDE.md`, `en/SPECIFICATIONS.md`, or `overview-en.md`).
+- **Justification & Impact**:
+  - Preserves cryptographic immutability of existing Git release tags (`v1.0.0`, `v1.0.1`) while publishing a unified `provider: mike` version switcher (`versions.json`) and subpath-preserving IONOS Apache redirects (`/`, `/latest/`, `/dev/`, `/main/`, `/v1.0.1/`, `/v1.0.0/`) under `mkdocs build --strict`.
+- **Removal Condition**:
+  - Tags from `v1.1.0` onward ship full native Diátaxis quadrant trees and `mkdocs.yml`, limiting fallback routing strictly to legacy `v1.0.x` snapshots.
 
 ---
 

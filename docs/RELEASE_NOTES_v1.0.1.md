@@ -34,5 +34,5 @@
   ```
 
 ### 4. Documentation & Verification Metrics
-- **Bilingual Guides (`EN` & `FR`)**: Added 5-minute beginner guides ([`docs/en/HOWTO.md`](docs/en/HOWTO.md) and [`docs/fr/HOWTO.md`](docs/fr/HOWTO.md)), aligned Cookbook `check-in-use --json` wrapper schemas, and automated TOML/YAML config block validation in `tests/governance_and_docs_test.rs`.
+- **Bilingual Guides (`EN` & `FR`)**: Added 5-minute beginner guides ([`docs/en/HOWTO.md`](en/HOWTO.md) and [`docs/fr/HOWTO.md`](fr/HOWTO.md)), aligned Cookbook `check-in-use --json` wrapper schemas, and automated TOML/YAML config block validation in `tests/governance_and_docs_test.rs`.
 - **Verification**: `cargo fmt --all -- --check` clean, `cargo clippy --all-targets -- -D warnings` clean (`0` warnings across Linux, `x86_64-pc-windows-gnu`, `aarch64-apple-darwin`), **`124+` passing unit & integration tests**, and **`94.31%` line coverage** (`cargo llvm-cov --fail-under-lines 90`).

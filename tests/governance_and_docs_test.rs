@@ -506,6 +506,8 @@ fn github_workflows_pin_actions_to_full_shas_and_avoid_run_interpolation() {
         root.join(".github/workflows/ci.yml"),
         root.join(".github/workflows/release.yml"),
         root.join(".github/workflows/docker-publish.yml"),
+        root.join(".github/workflows/docs-ci.yml"),
+        root.join(".github/workflows/docs-publish.yml"),
     ];
 
     for wf_path in &workflow_paths {
@@ -515,6 +517,13 @@ fn github_workflows_pin_actions_to_full_shas_and_avoid_run_interpolation() {
 
         for (job_key, job_val) in jobs {
             let job_name = job_key.as_str().unwrap_or("<unknown>");
+            if let Some(if_val) = job_val.get("if").and_then(|v| v.as_str()) {
+                assert!(
+                    !if_val.contains("secrets."),
+                    "{} job '{job_name}' must not reference secrets directly inside if:",
+                    wf_path.display()
+                );
+            }
             let steps = job_val["steps"].as_sequence().expect("job steps sequence");
 
             for (idx, step) in steps.iter().enumerate() {
@@ -578,6 +587,17 @@ fn github_workflows_pin_actions_to_full_shas_and_avoid_run_interpolation() {
     assert!(!trigger_block.contains("tags:"));
     assert!(docker_raw.contains("jmrenouard/filecleaner"));
     assert!(docker_raw.contains("linux/amd64,linux/arm64"));
+
+    for docs_wf_path in [&workflow_paths[3], &workflow_paths[4]] {
+        let docs_doc: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str(&fs::read_to_string(docs_wf_path).unwrap()).unwrap();
+        assert_eq!(
+            docs_doc["permissions"]["contents"].as_str(),
+            Some("read"),
+            "{} must enforce top-level permissions.contents: read",
+            docs_wf_path.display()
+        );
+    }
 }
 
 #[test]
@@ -629,20 +649,33 @@ fn heading_signature_outside_fences(markdown: &str) -> Vec<usize> {
 fn extract_fenced_config_blocks(markdown: &str) -> Vec<(&'static str, usize, String)> {
     let mut blocks = Vec::new();
     let mut current_lang: Option<&'static str> = None;
+    let mut in_other_fence = false;
     let mut start_line = 0usize;
     let mut buf = String::new();
 
     for (idx, line) in markdown.lines().enumerate() {
         let trimmed = line.trim();
         if current_lang.is_none() {
-            if trimmed == "```toml" {
+            if in_other_fence {
+                if trimmed.starts_with("```") {
+                    in_other_fence = false;
+                }
+                continue;
+            }
+            if trimmed == "```toml" || trimmed.starts_with("```toml ") {
                 current_lang = Some("toml");
                 start_line = idx + 1;
                 buf.clear();
-            } else if trimmed == "```yaml" || trimmed == "```yml" {
+            } else if trimmed == "```yaml"
+                || trimmed.starts_with("```yaml ")
+                || trimmed == "```yml"
+                || trimmed.starts_with("```yml ")
+            {
                 current_lang = Some("yaml");
                 start_line = idx + 1;
                 buf.clear();
+            } else if trimmed.starts_with("```") {
+                in_other_fence = true;
             }
         } else if trimmed.starts_with("```") {
             let lang = current_lang.take().unwrap();
@@ -662,6 +695,20 @@ fn extract_fenced_config_blocks(markdown: &str) -> Vec<(&'static str, usize, Str
     }
 
     blocks
+}
+
+fn validate_documented_config_block(label: &str, lang: &str, start_line: usize, block: &str) {
+    let cfg: filecleaner::Config = match lang {
+        "toml" => toml::from_str(block).unwrap_or_else(|e| {
+            panic!("{label}:{start_line} invalid TOML config block: {e}\n{block}")
+        }),
+        "yaml" => serde_yaml_ng::from_str(block).unwrap_or_else(|e| {
+            panic!("{label}:{start_line} invalid YAML config block: {e}\n{block}")
+        }),
+        _ => unreachable!(),
+    };
+    cfg.validate()
+        .unwrap_or_else(|e| panic!("{label}:{start_line} config validation failed: {e}\n{block}"));
 }
 
 #[test]
@@ -718,24 +765,42 @@ fn all_documented_configs_and_examples_parse_and_validate() {
         let content = fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
         for (lang, start_line, block) in extract_fenced_config_blocks(&content) {
-            let cfg: filecleaner::Config = match lang {
-                "toml" => toml::from_str(&block).unwrap_or_else(|e| {
-                    panic!("{rel}:{start_line} invalid TOML config block: {e}\n{block}")
-                }),
-                "yaml" => serde_yaml_ng::from_str(&block).unwrap_or_else(|e| {
-                    panic!("{rel}:{start_line} invalid YAML config block: {e}\n{block}")
-                }),
-                _ => unreachable!(),
-            };
-            cfg.validate().unwrap_or_else(|e| {
-                panic!("{rel}:{start_line} config validation failed: {e}\n{block}")
-            });
+            validate_documented_config_block(rel, lang, start_line, &block);
             validated_blocks += 1;
         }
     }
     assert!(
         validated_blocks >= 10,
         "expected >= 10 validated doc config blocks, found {validated_blocks}"
+    );
+
+    let mut diataxis_docs_scanned = 0usize;
+    let mut diataxis_validated_blocks = 0usize;
+    for rel_dir in ["docs/01-tutorials", "docs/02-how-to-guides"] {
+        let dir = root.join(rel_dir);
+        assert!(dir.is_dir(), "{} directory must exist", dir.display());
+        for path in collect_markdown_files(&dir) {
+            diataxis_docs_scanned += 1;
+            let rel_label = path
+                .strip_prefix(&root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let content = fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+            for (lang, start_line, block) in extract_fenced_config_blocks(&content) {
+                validate_documented_config_block(&rel_label, lang, start_line, &block);
+                diataxis_validated_blocks += 1;
+            }
+        }
+    }
+    assert!(
+        diataxis_docs_scanned >= 2,
+        "expected Markdown files under docs/01-tutorials/ and docs/02-how-to-guides/"
+    );
+    assert!(
+        diataxis_validated_blocks >= 1,
+        "expected >= 1 validated config block across docs/01-tutorials/ and docs/02-how-to-guides/"
     );
 
     let examples_dir = root.join("examples");

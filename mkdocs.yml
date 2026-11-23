@@ -1,0 +1,165 @@
+site_name: FileCleaner Documentation
+site_description: Deterministic pure-Rust directory retention, backup safety guardrails, 6-layer in-use detection, S3 archival, and daemon engine
+site_url: https://filecleaner.lightpath.fr/
+repo_name: jmrenouard/FileCleaner
+repo_url: https://github.com/jmrenouard/FileCleaner
+edit_uri: edit/main/docs/
+copyright: Copyright &copy; 2026 Jean-Marie Renouard &middot; LightPath
+
+docs_dir: docs
+exclude_docs: |
+  *.kdbx
+  *.keyx
+  *.fc-tmp
+  *.pid
+  *.log
+  .env
+  .env.*
+
+hooks:
+  - scripts/mkdocs_hooks.py
+
+theme:
+  name: material
+  language: en
+  logo: assets/logo.svg
+  favicon: assets/logo.svg
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - navigation.tracking
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: cyan
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: cyan
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+plugins:
+  - search
+
+extra:
+  version:
+    provider: mike
+    default: latest
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/jmrenouard/FileCleaner
+      name: FileCleaner on GitHub
+    - icon: fontawesome/brands/docker
+      link: https://hub.docker.com/r/jmrenouard/filecleaner
+      name: FileCleaner on Docker Hub
+    - icon: fontawesome/solid/globe
+      link: https://www.lightpath.fr
+      name: LightPath
+
+extra_css:
+  - https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css
+  - stylesheets/extra.css
+
+extra_javascript:
+  - javascripts/katex.js
+  - https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js
+  - https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+
+nav:
+  - Home: index.md
+  - Tutorials:
+      - 01-tutorials/index.md
+      - Local Retention Sandbox: 01-tutorials/01-local-retention-sandbox.md
+      - Backup Guard & In-Use Lab: 01-tutorials/02-backup-guard-and-in-use-lab.md
+      - PostgreSQL WAL & S3 Docker Lab: 01-tutorials/03-postgres-wal-s3-docker-lab.md
+      - 5-Minute HOWTO (EN): en/HOWTO.md
+      - HOWTO 5 Minutes (FR): fr/HOWTO.md
+  - How-To Guides:
+      - 02-how-to-guides/index.md
+      - Deployment:
+          - Deploy with Docker and systemd: 02-how-to-guides/deployment/deploy-filecleaner-docker-and-systemd.md
+      - Operations:
+          - Configure Backup Retention and S3 Archival: 02-how-to-guides/operations/configure-backup-retention-and-s3-archival.md
+          - Run Reactive Daemon and Rotate Logs: 02-how-to-guides/operations/run-reactive-daemon-and-rotate-logs.md
+      - Incident Response:
+          - Remediate Backup Freeze or S3 Failure: 02-how-to-guides/incident-response/remediate-backup-freeze-or-s3-failure.md
+      - Security:
+          - Enforce Pre-Delete Hooks and TOCTOU Guards: 02-how-to-guides/security/enforce-pre-delete-hooks-and-toctou-guards.md
+      - Production Cookbooks:
+          - Cookbook Examples (EN): en/COOKBOOK_EXAMPLES.md
+          - Exemples & Recettes (FR): fr/EXEMPLES_RECETTES.md
+  - Reference:
+      - 03-reference/index.md
+      - Configuration:
+          - Configuration Schema & Invariants: 03-reference/configuration/config-schema-and-invariants.md
+      - CLI & Scripts:
+          - CLI Commands & Exit Codes: 03-reference/cli-and-scripts/cli-commands-and-exit-codes.md
+      - Troubleshooting Codes:
+          - Error & Alert Matrix: 03-reference/troubleshooting-codes/error-and-alert-matrix.md
+      - Complete Manuals:
+          - User & Operations Guide (EN): en/USER_GUIDE.md
+          - Guide Utilisateur (FR): fr/GUIDE_UTILISATEUR.md
+          - Formal Specifications (EN): en/SPECIFICATIONS.md
+          - Spécifications Formelles (FR): fr/SPECIFICATIONS.md
+  - Explanation:
+      - 04-explanation/index.md
+      - Architecture Overview:
+          - Fail-Closed 6-Phase Pipeline: 04-explanation/architecture-overview/fail-closed-six-phase-pipeline.md
+      - Design Decisions:
+          - ADR-001 Pure-Rust Fail-Closed Engine: 04-explanation/design-decisions/adr-001-pure-rust-fail-closed-engine.md
+          - ADR-002 Diataxis Versioned MkDocs Publishing: 04-explanation/design-decisions/adr-002-diataxis-versioned-mkdocs-publishing.md
+      - Deep Dives:
+          - Retention Calculus & TOCTOU Defenses: 04-explanation/deep-dives/retention-calculus-and-toctou-defenses.md
+      - Project Overviews:
+          - Overview (English): overview-en.md
+          - Aperçu (Français): overview-fr.md
+          - Dev-Team Alignment Session: team-sessions/team-session-2026-11-20.md
+  - Releases & Governance:
+      - Changelog: CHANGELOG.md
+      - Release Notes v1.0.1: RELEASE_NOTES_v1.0.1.md
+      - Action Logbook: ACTION_LOGBOOK.md
+      - RCA Register: RCA_REGISTER.md

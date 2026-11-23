@@ -30,3 +30,11 @@ Thumbs.db
 # Agent teamwork metadata
 .agents/teamwork/
 /.worktrees/
+
+# Documentation build & Python test caches
+site/
+site_dist/
+.pytest_cache/
+__pycache__/
+*.pyc
+
