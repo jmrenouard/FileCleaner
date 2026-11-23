@@ -272,15 +272,15 @@
 
 ---
 
-### APP-004 — Immutable Git Tag Overlay (`git archive` + Fallback Quadrant Routing) for Pre-MkDocs Releases `v1.0.0` & `v1.0.1`
+### APP-004 — Immutable Git Tag Overlay (`git archive` + Dual EN/FR Quadrant Routing) for Pre-MkDocs Releases `v1.0.0` & `v1.0.1`
 
-- **Target Scope**: [`scripts/build_versioned_docs.py`](../scripts/build_versioned_docs.py), [`scripts/mkdocs_hooks.py`](../scripts/mkdocs_hooks.py), [`mkdocs.yml`](../mkdocs.yml).
+- **Target Scope**: [`scripts/build_versioned_docs.py`](../scripts/build_versioned_docs.py), [`scripts/mkdocs_hooks.py`](../scripts/mkdocs_hooks.py), [`mkdocs.yml`](../mkdocs.yml), [`mkdocs.fr.yml`](../mkdocs.fr.yml).
 - **Nature of the Approximation**:
-  - Release tags `v1.0.0` and `v1.0.1` predate MkDocs Material, Diátaxis quadrant directories (`docs/01-tutorials/`..`docs/04-explanation/`), and `docs/index.md` (`v1.0.0` also lacks `docs/en/HOWTO.md`). Rather than mutating immutable release tags, `scripts/build_versioned_docs.py` extracts each tag via `git archive`, overlays current `mkdocs.yml`, `scripts/mkdocs_hooks.py`, `docs/stylesheets/extra.css`, `docs/javascripts/katex.js`, and fallback portal assets (`docs/index.md`, `docs/assets/*.svg`), while `scripts/mkdocs_hooks.py` prunes missing `nav:` entries and routes missing quadrant links on historical snapshots to equivalent legacy guides (`en/HOWTO.md`, `en/COOKBOOK_EXAMPLES.md`, `en/USER_GUIDE.md`, `en/SPECIFICATIONS.md`, or `overview-en.md`).
+  - Release tags `v1.0.0` and `v1.0.1` predate MkDocs Material, Diátaxis quadrant directories (`docs/01-tutorials/`..`docs/04-explanation/`, `docs/fr/01-tutoriels/`..`docs/fr/04-explications/`), and portal pages (`docs/index.md`, `docs/fr/index.md`; `v1.0.0` also lacks `HOWTO.md`). Rather than mutating immutable release tags, `scripts/build_versioned_docs.py` extracts each tag via `git archive`, overlays current `mkdocs.yml`, `mkdocs.fr.yml`, `scripts/mkdocs_hooks.py`, `docs/stylesheets/extra.css`, `docs/javascripts/katex.js`, and fallback portal assets (`docs/index.md`, `docs/fr/index.md`, `docs/assets/*.svg`), building EN into `<ver>/` and FR into `<ver>/fr/` (plus per-version `<ver>/versions.json` with `"../<ver>/fr"` entries and `"fr"` alias so Material's `mike` version picker stays inside the French sub-site). Meanwhile `scripts/mkdocs_hooks.py` prunes missing `nav:` entries, maps `fr/` to the French sub-site root, dynamically syncs `extra.alternate`, and routes missing quadrant or release-note links on historical snapshots to equivalent legacy guides or `CHANGELOG.md`.
 - **Justification & Impact**:
-  - Preserves cryptographic immutability of existing Git release tags (`v1.0.0`, `v1.0.1`) while publishing a unified `provider: mike` version switcher (`versions.json`) and subpath-preserving IONOS Apache redirects (`/`, `/latest/`, `/dev/`, `/main/`, `/v1.0.1/`, `/v1.0.0/`) under `mkdocs build --strict`.
+  - Preserves cryptographic immutability of existing Git release tags (`v1.0.0`, `v1.0.1`) while publishing cleanly isolated English (`/<ver>/`) and French (`/<ver>/fr/`) sites with version-preserving `mike` + `extra.alternate` switchers and subpath-preserving IONOS Apache redirects (`/`, `/fr/`, `/latest/`, `/dev/`, `/main/`, `/v1.0.1/`, `/v1.0.0/`) under `mkdocs build --strict`.
 - **Removal Condition**:
-  - Tags from `v1.1.0` onward ship full native Diátaxis quadrant trees and `mkdocs.yml`, limiting fallback routing strictly to legacy `v1.0.x` snapshots.
+  - Future releases ship full native EN and FR Diátaxis quadrant trees, limiting fallback routing strictly to legacy `v1.0.x` snapshots.
 
 ---
 

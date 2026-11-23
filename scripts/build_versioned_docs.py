@@ -22,6 +22,7 @@ _PRIVATE_OUTPUT_RE = re.compile(
 
 ALWAYS_OVERLAY_FILES: tuple[str, ...] = (
     "mkdocs.yml",
+    "mkdocs.fr.yml",
     "scripts/mkdocs_hooks.py",
     "docs/stylesheets/extra.css",
     "docs/javascripts/katex.js",
@@ -29,6 +30,7 @@ ALWAYS_OVERLAY_FILES: tuple[str, ...] = (
 
 FALLBACK_OVERLAY_FILES: tuple[str, ...] = (
     "docs/index.md",
+    "docs/fr/index.md",
     "docs/assets/logo.svg",
     "docs/assets/header-banner.svg",
 )
@@ -105,14 +107,16 @@ def build_versions_manifest(
 def render_redirect_html(
     target_url: str,
     title: str = "FileCleaner Documentation",
+    lang: str = "en",
 ) -> str:
     """Render a minimal HTML redirect fallback page for static hosting."""
     escaped_target = html.escape(target_url, quote=True)
     escaped_title = html.escape(title, quote=True)
+    escaped_lang = html.escape(lang, quote=True)
     js_target = json.dumps(target_url)
     return (
         "<!DOCTYPE html>\n"
-        '<html lang="en">\n'
+        f'<html lang="{escaped_lang}">\n'
         "<head>\n"
         '  <meta charset="utf-8">\n'
         f"  <title>{escaped_title}</title>\n"
@@ -162,6 +166,7 @@ ErrorDocument 404 /{clean_latest}/404.html
 
   # Redirect site root to the latest release
   RewriteRule ^$ /{clean_latest}/ [R=302,L]
+  RewriteRule ^fr(?:/(.*))?$ /{clean_latest}/fr/$1 [R=302,L]
 
   # Subpath-preserving version alias redirects
   RewriteRule ^latest(?:/(.*))?$ /{clean_latest}/$1 [R=302,L]
@@ -233,14 +238,18 @@ def _run_mkdocs_build(
     version_slug: str,
     base_url: str,
     strict: bool,
+    config_filename: str = "mkdocs.yml",
+    lang_subpath: str = "",
 ) -> None:
-    """Invoke `python -m mkdocs build` for one version directory."""
+    """Invoke `python -m mkdocs build` for one version directory and language."""
     env = os.environ.copy()
     env["PYTHONUTF8"] = "1"
     env["FILECLEANER_DOCS_REF"] = (
         "main" if git_ref in {"WORKTREE", "origin/main", "main", "HEAD"} else git_ref
     )
-    env["FILECLEANER_DOCS_SITE_URL"] = f"{base_url.rstrip('/')}/{version_slug}/"
+    clean_lang = lang_subpath.strip("/")
+    lang_suffix = f"/{clean_lang}" if clean_lang else ""
+    env["FILECLEANER_DOCS_SITE_URL"] = f"{base_url.rstrip('/')}/{version_slug}{lang_suffix}/"
 
     cmd = [
         sys.executable,
@@ -248,7 +257,7 @@ def _run_mkdocs_build(
         "mkdocs",
         "build",
         "-f",
-        str(project_dir / "mkdocs.yml"),
+        str(project_dir / config_filename),
         "-d",
         str(site_output_dir),
     ]
@@ -256,6 +265,38 @@ def _run_mkdocs_build(
         cmd.append("--strict")
 
     subprocess.run(cmd, cwd=str(project_dir), env=env, check=True)  # nosec B603
+
+
+def _build_version_languages(
+    project_dir: Path,
+    version_output_dir: Path,
+    git_ref: str,
+    version_slug: str,
+    base_url: str,
+    strict: bool,
+) -> None:
+    """Build English root and optional French sub-site into `version_output_dir`."""
+    _run_mkdocs_build(
+        project_dir=project_dir,
+        site_output_dir=version_output_dir,
+        git_ref=git_ref,
+        version_slug=version_slug,
+        base_url=base_url,
+        strict=strict,
+        config_filename="mkdocs.yml",
+        lang_subpath="",
+    )
+    if (project_dir / "mkdocs.fr.yml").is_file():
+        _run_mkdocs_build(
+            project_dir=project_dir,
+            site_output_dir=version_output_dir / "fr",
+            git_ref=git_ref,
+            version_slug=version_slug,
+            base_url=base_url,
+            strict=strict,
+            config_filename="mkdocs.fr.yml",
+            lang_subpath="fr",
+        )
 
 
 def build_single_version(
@@ -272,9 +313,9 @@ def build_single_version(
     version_output_dir.parent.mkdir(parents=True, exist_ok=True)
 
     if validated_ref == "WORKTREE":
-        _run_mkdocs_build(
+        _build_version_languages(
             project_dir=repo_root,
-            site_output_dir=version_output_dir,
+            version_output_dir=version_output_dir,
             git_ref=validated_ref,
             version_slug=version_slug,
             base_url=base_url,
@@ -302,9 +343,9 @@ def build_single_version(
             )
             _safe_extract_zip(archive_path, snapshot_dir)
             _overlay_repo_files(repo_root=repo_root, snapshot_dir=snapshot_dir)
-            _run_mkdocs_build(
+            _build_version_languages(
                 project_dir=snapshot_dir,
-                site_output_dir=version_output_dir,
+                version_output_dir=version_output_dir,
                 git_ref=validated_ref,
                 version_slug=version_slug,
                 base_url=base_url,
@@ -355,29 +396,52 @@ def build_versioned_site(
         release_tags = discover_release_tags(resolved_repo)
 
     versions_manifest = build_versions_manifest(release_tags, include_main=True)
+    versions_json_payload = json.dumps(versions_manifest, indent=2) + "\n"
     (resolved_out / "versions.json").write_text(
-        json.dumps(versions_manifest, indent=2) + "\n",
+        versions_json_payload,
         encoding="utf-8",
     )
 
-    build_single_version(
-        repo_root=resolved_repo,
-        git_ref=main_ref,
-        version_slug="main",
-        output_dir=resolved_out,
-        base_url=base_url,
-        strict=strict,
-    )
-
-    for tag in release_tags:
+    built_dirs = [
         build_single_version(
             repo_root=resolved_repo,
-            git_ref=tag,
-            version_slug=tag,
+            git_ref=main_ref,
+            version_slug="main",
             output_dir=resolved_out,
             base_url=base_url,
             strict=strict,
         )
+    ]
+
+    for tag in release_tags:
+        built_dirs.append(
+            build_single_version(
+                repo_root=resolved_repo,
+                git_ref=tag,
+                version_slug=tag,
+                output_dir=resolved_out,
+                base_url=base_url,
+                strict=strict,
+            )
+        )
+
+    for version_dir in built_dirs:
+        if (version_dir / "fr").is_dir():
+            fr_manifest = [
+                {
+                    "version": f"../{entry['version']}/fr",
+                    "title": entry["title"],
+                    "aliases": (
+                        list(entry["aliases"])
+                        + (["fr"] if entry["version"] == version_dir.name and "fr" not in entry["aliases"] else [])
+                    ),
+                }
+                for entry in versions_manifest
+            ]
+            (version_dir / "versions.json").write_text(
+                json.dumps(fr_manifest, indent=2) + "\n",
+                encoding="utf-8",
+            )
 
     latest_version = release_tags[0] if release_tags else "main"
     (resolved_out / ".htaccess").write_text(
@@ -386,6 +450,17 @@ def build_versioned_site(
     )
     (resolved_out / "index.html").write_text(
         render_redirect_html(f"./{latest_version}/", "FileCleaner Documentation"),
+        encoding="utf-8",
+    )
+
+    fr_root_dir = resolved_out / "fr"
+    fr_root_dir.mkdir(parents=True, exist_ok=True)
+    (fr_root_dir / "index.html").write_text(
+        render_redirect_html(
+            f"../{latest_version}/fr/",
+            f"Documentation FileCleaner ({latest_version})",
+            lang="fr",
+        ),
         encoding="utf-8",
     )
 

@@ -7,6 +7,7 @@ from pathlib import Path
 import posixpath
 import re
 from typing import TYPE_CHECKING, Any, Iterable
+from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
     from mkdocs.structure.files import Files
@@ -17,6 +18,10 @@ VIRTUAL_DOCS: dict[str, tuple[str, str]] = {
     "overview-fr.md": ("README.fr.md", ""),
     "CHANGELOG.md": ("CHANGELOG.md", ""),
 }
+_VIRTUAL_DOCS_BY_LANG: dict[str, tuple[str, ...]] = {
+    "en": ("overview-en.md", "CHANGELOG.md"),
+    "fr": ("overview-fr.md", "CHANGELOG.md"),
+}
 _REPO_DOC_TO_VIRTUAL: dict[str, str] = {
     source_path: virtual_uri for virtual_uri, (source_path, _) in VIRTUAL_DOCS.items()
 }
@@ -26,6 +31,30 @@ QUADRANT_HISTORICAL_FALLBACKS: dict[str, str] = {
     "03-reference": "en/USER_GUIDE.md",
     "04-explanation": "en/SPECIFICATIONS.md",
 }
+QUADRANT_HISTORICAL_FALLBACKS_FR: dict[str, tuple[str, ...]] = {
+    "01-tutoriels": ("HOWTO.md", "GUIDE_UTILISATEUR.md"),
+    "02-guides-pratiques": ("EXEMPLES_RECETTES.md", "GUIDE_UTILISATEUR.md"),
+    "03-reference": ("GUIDE_UTILISATEUR.md",),
+    "04-explications": ("SPECIFICATIONS.md", "GUIDE_UTILISATEUR.md"),
+}
+_EN_ONLY_REPO_FILES = frozenset({"README.md", "docs/index.md"})
+_EN_ONLY_DOC_PREFIXES = (
+    "en/",
+    "01-tutorials/",
+    "02-how-to-guides/",
+    "03-reference/",
+    "04-explanation/",
+    "team-sessions/",
+)
+_FR_ONLY_REPO_FILES = frozenset({"README.fr.md", "docs/fr/index.md"})
+_FR_ONLY_DOC_PREFIXES = (
+    "fr/",
+    "01-tutoriels/",
+    "02-guides-pratiques/",
+    "03-reference-fr/",
+    "04-explications/",
+)
+_RELEASES_NAV_TITLES = frozenset({"Releases & Governance", "Versions et gouvernance"})
 ALERT_MAP: dict[str, str] = {
     "NOTE": "note",
     "TIP": "tip",
@@ -201,6 +230,101 @@ def _historical_overview_target(
     return f"{clean_repo}/blob/{ref}/{source_path}"
 
 
+def _get_config_language(config: Any) -> str:
+    """Return normalized configured theme language (`'fr'` or `'en'`, defaulting to `'en'`)."""
+    theme = config.get("theme") if isinstance(config, dict) else getattr(config, "theme", None)
+    raw_lang: Any = None
+    if isinstance(theme, dict):
+        raw_lang = theme.get("language")
+    elif theme is not None:
+        try:
+            raw_lang = theme["language"]
+        except (KeyError, TypeError):
+            raw_lang = getattr(theme, "language", None)
+    norm = str(raw_lang or "en").strip().lower()
+    return "fr" if norm == "fr" else "en"
+
+
+def _derive_language_base_paths(site_url: str | None, lang: str = "en") -> tuple[str, str]:
+    """Return `(en_base_path, fr_base_path)` derived from `site_url` (e.g. `('/main/', '/main/fr/')`)."""
+    raw_path = urlsplit((site_url or "").strip()).path or "/"
+    if not raw_path.startswith("/"):
+        raw_path = f"/{raw_path}"
+    if not raw_path.endswith("/"):
+        raw_path = f"{raw_path}/"
+    en_base = raw_path[:-3] if lang == "fr" and raw_path.endswith("/fr/") else raw_path
+    if not en_base:
+        en_base = "/"
+    fr_base = f"{en_base}fr/"
+    return en_base, fr_base
+
+
+def _to_directory_url(doc_subpath: str, use_directory_urls: bool = True) -> str:
+    """Convert a docs-relative Markdown path to a built site-relative URL subpath."""
+    clean = doc_subpath.lstrip("/")
+    if not clean.endswith(".md"):
+        return clean
+    if not use_directory_urls:
+        return "index.html" if clean == "index.md" else f"{clean[:-3]}.html"
+    if clean == "index.md":
+        return ""
+    if clean.endswith("/index.md"):
+        return f"{clean[:-len('index.md')]}"
+    return f"{clean[:-3]}/"
+
+
+def _cross_language_target(
+    repo_rel: str,
+    target_lang: str,
+    target_base_path: str,
+    anchor: str,
+    clean_repo: str,
+    ref: str,
+    repo_root: Path | None,
+    docs_dir: Path | None,
+    use_directory_urls: bool,
+) -> str:
+    """Resolve an opposite-language document link to its sibling site URL or GitHub blob."""
+    if target_lang == "fr":
+        if repo_rel == "README.fr.md":
+            if repo_root is None or (repo_root / "README.fr.md").is_file():
+                return f"{target_base_path}{_to_directory_url('overview-fr.md', use_directory_urls)}{anchor}"
+            return f"{clean_repo}/blob/{ref}/README.fr.md{anchor}"
+        if repo_rel.startswith("docs/fr/"):
+            fr_sub = repo_rel[len("docs/fr/") :]
+            if docs_dir is not None and not (docs_dir / "fr" / fr_sub).exists():
+                top_segment = fr_sub.split("/", 1)[0]
+                for fb in QUADRANT_HISTORICAL_FALLBACKS_FR.get(top_segment, ("GUIDE_UTILISATEUR.md",)):
+                    if (docs_dir / "fr" / fb).is_file():
+                        return f"{target_base_path}{_to_directory_url(fb, use_directory_urls)}"
+                if (docs_dir / "fr" / "GUIDE_UTILISATEUR.md").is_file():
+                    return f"{target_base_path}{_to_directory_url('GUIDE_UTILISATEUR.md', use_directory_urls)}"
+                if repo_root is not None and (repo_root / "README.fr.md").is_file():
+                    return f"{target_base_path}{_to_directory_url('overview-fr.md', use_directory_urls)}"
+                return f"{clean_repo}/blob/{ref}/{repo_rel}{anchor}"
+            return f"{target_base_path}{_to_directory_url(fr_sub, use_directory_urls)}{anchor}"
+        return f"{clean_repo}/blob/{ref}/{repo_rel}{anchor}"
+
+    # target_lang == "en"
+    if repo_rel == "README.md":
+        if repo_root is None or (repo_root / "README.md").is_file():
+            return f"{target_base_path}{_to_directory_url('overview-en.md', use_directory_urls)}{anchor}"
+        return f"{clean_repo}/blob/{ref}/README.md{anchor}"
+    if repo_rel == "docs/index.md":
+        return f"{target_base_path}{anchor}"
+    if repo_rel.startswith("docs/"):
+        en_sub = repo_rel[len("docs/") :]
+        if docs_dir is not None and not (docs_dir / en_sub).exists():
+            top_segment = en_sub.split("/", 1)[0]
+            if top_segment in QUADRANT_HISTORICAL_FALLBACKS:
+                fb = QUADRANT_HISTORICAL_FALLBACKS[top_segment]
+                if (docs_dir / fb).is_file():
+                    return f"{target_base_path}{_to_directory_url(fb, use_directory_urls)}"
+            return f"{clean_repo}/blob/{ref}/{repo_rel}{anchor}"
+        return f"{target_base_path}{_to_directory_url(en_sub, use_directory_urls)}{anchor}"
+    return f"{clean_repo}/blob/{ref}/{repo_rel}{anchor}"
+
+
 def _resolve_target(
     raw_url: str,
     page_src_path: str,
@@ -209,6 +333,10 @@ def _resolve_target(
     repo_url: str,
     available_root_docs: frozenset[str],
     docs_dir: Path | None = None,
+    lang: str | None = None,
+    en_base_path: str = "/",
+    fr_base_path: str = "/fr/",
+    use_directory_urls: bool = True,
 ) -> tuple[str | None, bool]:
     """Resolve a target URL or return `(None, True)` when excluded/neutralized."""
     if not raw_url or raw_url.startswith(("#", "/", "\\")) or _SCHEME_RE.match(raw_url):
@@ -246,14 +374,102 @@ def _resolve_target(
     ):
         repo_rel = f"docs/{repo_rel[len('docs/docs/') :]}"
 
+    # When building an isolated language sub-site, redirect opposite-language targets cleanly.
+    if lang == "en":
+        sub = repo_rel[len("docs/") :] if repo_rel.startswith("docs/") else ""
+        if (
+            repo_rel in _FR_ONLY_REPO_FILES
+            or sub.startswith(_FR_ONLY_DOC_PREFIXES)
+            or repo_rel.endswith(("_fr.md", "-fr.md"))
+        ):
+            return (
+                _cross_language_target(
+                    repo_rel=repo_rel,
+                    target_lang="fr",
+                    target_base_path=fr_base_path,
+                    anchor=anchor,
+                    clean_repo=clean_repo,
+                    ref=ref,
+                    repo_root=repo_root,
+                    docs_dir=docs_dir,
+                    use_directory_urls=use_directory_urls,
+                ),
+                False,
+            )
+    elif lang == "fr":
+        sub = repo_rel[len("docs/") :] if repo_rel.startswith("docs/") else ""
+        if (
+            repo_rel in _EN_ONLY_REPO_FILES
+            or sub.startswith(_EN_ONLY_DOC_PREFIXES)
+            or repo_rel.endswith(("_en.md", "-en.md"))
+        ):
+            return (
+                _cross_language_target(
+                    repo_rel=repo_rel,
+                    target_lang="en",
+                    target_base_path=en_base_path,
+                    anchor=anchor,
+                    clean_repo=clean_repo,
+                    ref=ref,
+                    repo_root=repo_root,
+                    docs_dir=docs_dir,
+                    use_directory_urls=use_directory_urls,
+                ),
+                False,
+            )
+
     if repo_rel in _REPO_DOC_TO_VIRTUAL:
         virtual_uri = _REPO_DOC_TO_VIRTUAL[repo_rel]
         if virtual_uri in available_root_docs:
             return f"{prefix}{virtual_uri}{anchor}", False
         return f"{clean_repo}/blob/{ref}/{repo_rel}{anchor}", False
 
+    if repo_rel == "docs/fr/index.md" and lang == "fr":
+        return f"{prefix}index.md{anchor}", False
+
     if repo_rel == "docs/index.md":
         return f"{prefix}index.md{anchor}", False
+
+    if repo_rel.startswith("docs/fr/") and lang == "fr":
+        fr_subpath = repo_rel[len("docs/fr/") :]
+        if docs_dir is not None:
+            top_segment = fr_subpath.split("/", 1)[0]
+            if (
+                top_segment in QUADRANT_HISTORICAL_FALLBACKS_FR
+                and not (docs_dir / "fr" / top_segment).is_dir()
+            ):
+                for fb in QUADRANT_HISTORICAL_FALLBACKS_FR[top_segment]:
+                    if (docs_dir / "fr" / fb).is_file():
+                        return f"{prefix}{fb}", False
+                return (
+                    _historical_overview_target(
+                        prefix, clean_repo, ref, available_root_docs, "overview-fr.md"
+                    ),
+                    False,
+                )
+
+            if (
+                norm_src == "fr/index.md"
+                and not (docs_dir / "fr" / "01-tutoriels").is_dir()
+                and not (docs_dir / "fr" / fr_subpath).exists()
+                and fr_subpath not in available_root_docs
+            ):
+                if (docs_dir / "fr" / "GUIDE_UTILISATEUR.md").is_file():
+                    return f"{prefix}GUIDE_UTILISATEUR.md", False
+                return (
+                    _historical_overview_target(
+                        prefix, clean_repo, ref, available_root_docs, "overview-fr.md"
+                    ),
+                    False,
+                )
+
+            candidate = docs_dir / "fr" / fr_subpath
+            if candidate.is_dir() and (candidate / "index.md").is_file():
+                index_subpath = posixpath.join(fr_subpath.rstrip("/"), "index.md")
+                return f"{prefix}{index_subpath}{anchor}", False
+
+        trailing = "/" if had_trailing_slash and fr_subpath and not fr_subpath.endswith("/") else ""
+        return f"{prefix}{fr_subpath}{trailing}{anchor}", False
 
     if repo_rel.startswith("docs/"):
         doc_subpath = repo_rel[len("docs/") :]
@@ -265,6 +481,11 @@ def _resolve_target(
             return f"{clean_repo}/blob/{ref}/{VIRTUAL_DOCS[doc_subpath][0]}{anchor}", False
 
         if docs_dir is not None:
+            if doc_subpath.startswith("RELEASE_NOTES_") and not (docs_dir / doc_subpath).is_file():
+                if "CHANGELOG.md" in available_root_docs:
+                    return f"{prefix}CHANGELOG.md", False
+                return f"{clean_repo}/blob/{ref}/{repo_rel}", False
+
             top_segment = doc_subpath.split("/", 1)[0]
             if (
                 top_segment in QUADRANT_HISTORICAL_FALLBACKS
@@ -327,6 +548,10 @@ def _rewrite_html_attributes(
     repo_url: str,
     available_root_docs: frozenset[str],
     docs_dir: Path | None,
+    lang: str | None = None,
+    en_base_path: str = "/",
+    fr_base_path: str = "/fr/",
+    use_directory_urls: bool = True,
 ) -> str:
     """Rewrite relative HTML `src`/`href` attributes outside inline code."""
 
@@ -339,6 +564,10 @@ def _rewrite_html_attributes(
             repo_url=repo_url,
             available_root_docs=available_root_docs,
             docs_dir=docs_dir,
+            lang=lang,
+            en_base_path=en_base_path,
+            fr_base_path=fr_base_path,
+            use_directory_urls=use_directory_urls,
         )
         new_val = "#" if neutralized else str(resolved)
         return f"{match.group(1)}{match.group(2)}{new_val}{match.group(2)}"
@@ -355,6 +584,10 @@ def _rewrite_prose_segment(
     repo_url: str,
     available_root_docs: frozenset[str],
     docs_dir: Path | None = None,
+    lang: str | None = None,
+    en_base_path: str = "/",
+    fr_base_path: str = "/fr/",
+    use_directory_urls: bool = True,
 ) -> str:
     """Rewrite Markdown links and HTML `src`/`href` outside inline code spans."""
     out: list[str] = []
@@ -373,6 +606,10 @@ def _rewrite_prose_segment(
                     repo_url=repo_url,
                     available_root_docs=available_root_docs,
                     docs_dir=docs_dir,
+                    lang=lang,
+                    en_base_path=en_base_path,
+                    fr_base_path=fr_base_path,
+                    use_directory_urls=use_directory_urls,
                 )
             )
 
@@ -409,6 +646,10 @@ def _rewrite_prose_segment(
                         repo_url=repo_url,
                         available_root_docs=available_root_docs,
                         docs_dir=docs_dir,
+                        lang=lang,
+                        en_base_path=en_base_path,
+                        fr_base_path=fr_base_path,
+                        use_directory_urls=use_directory_urls,
                     )
                     url_part, title_suffix, had_angles = _split_destination(
                         text[bracket_end + 2 : paren_end]
@@ -421,6 +662,10 @@ def _rewrite_prose_segment(
                         repo_url=repo_url,
                         available_root_docs=available_root_docs,
                         docs_dir=docs_dir,
+                        lang=lang,
+                        en_base_path=en_base_path,
+                        fr_base_path=fr_base_path,
+                        use_directory_urls=use_directory_urls,
                     )
                     if neutralized:
                         out.append("" if is_img else label)
@@ -445,30 +690,39 @@ def rewrite_relative_links(
     docs_dir: Path | None = None,
     use_directory_urls: bool = True,
     available_root_docs: Iterable[str] | None = None,
+    output_src_path: str | None = None,
+    lang: str | None = None,
+    site_url: str = "",
 ) -> str:
     """Rewrite repository-relative Markdown and HTML links outside fenced code blocks."""
-    norm = page_src_path.replace("\\", "/").lstrip("/")
-    md_depth = norm.count("/")
+    repo_norm = page_src_path.replace("\\", "/").lstrip("/")
+    depth_norm = (output_src_path or repo_norm).replace("\\", "/").lstrip("/")
+    md_depth = depth_norm.count("/")
     html_depth = md_depth + (
-        0 if (not use_directory_urls or norm == "index.md" or norm.endswith("/index.md")) else 1
+        0 if (not use_directory_urls or depth_norm == "index.md" or depth_norm.endswith("/index.md")) else 1
     )
     resolved_ref = _effective_repo_ref(ref)
     resolved_docs = Path(docs_dir) if docs_dir is not None else None
     root_docs = (
         frozenset(VIRTUAL_DOCS) if available_root_docs is None else frozenset(available_root_docs)
     )
+    en_base_path, fr_base_path = _derive_language_base_paths(site_url, lang=lang or "en")
     return "".join(
         chunk
         if is_fence
         else _rewrite_prose_segment(
             chunk,
-            page_src_path=norm,
+            page_src_path=repo_norm,
             md_prefix="../" * md_depth,
             html_prefix="../" * html_depth,
             ref=resolved_ref,
             repo_url=repo_url,
             available_root_docs=root_docs,
             docs_dir=resolved_docs,
+            lang=lang,
+            en_base_path=en_base_path,
+            fr_base_path=fr_base_path,
+            use_directory_urls=use_directory_urls,
         )
         for is_fence, chunk in _split_fences(markdown)
     )
@@ -483,12 +737,13 @@ def _nav_doc_exists(rel_path: str, docs_dir: Path, repo_root: Path) -> bool:
     return False
 
 
-def _discover_release_notes_entries(docs_dir: Path) -> list[dict[str, str]]:
+def _discover_release_notes_entries(docs_dir: Path, lang: str = "en") -> list[dict[str, str]]:
     """Discover `RELEASE_NOTES_*.md` files in `docs_dir` sorted by semver descending."""
     if not docs_dir.is_dir():
         return []
     semver_entries: list[tuple[tuple[int, int, int], str, str]] = []
     other_entries: list[tuple[str, str]] = []
+    label_prefix = "Notes de version" if lang == "fr" else "Release Notes"
 
     for path in sorted(docs_dir.glob("RELEASE_NOTES_*.md")):
         if not path.is_file():
@@ -496,10 +751,10 @@ def _discover_release_notes_entries(docs_dir: Path) -> list[dict[str, str]]:
         match = _RELEASE_NOTES_SEMVER_RE.match(path.name)
         if match:
             ver = (int(match.group(1)), int(match.group(2)), int(match.group(3)))
-            semver_entries.append((ver, f"Release Notes v{ver[0]}.{ver[1]}.{ver[2]}", path.name))
+            semver_entries.append((ver, f"{label_prefix} v{ver[0]}.{ver[1]}.{ver[2]}", path.name))
         else:
             stem_tag = path.stem.removeprefix("RELEASE_NOTES_")
-            other_entries.append((f"Release Notes {stem_tag}", path.name))
+            other_entries.append((f"{label_prefix} {stem_tag}", path.name))
 
     semver_entries.sort(key=lambda item: item[0], reverse=True)
     ordered: list[dict[str, str]] = [{label: fname} for _, label, fname in semver_entries]
@@ -512,9 +767,10 @@ def _prune_releases_section(
     children: list[Any],
     docs_dir: Path,
     repo_root: Path,
+    lang: str = "en",
 ) -> list[Any]:
-    """Prune `Releases & Governance` items and inject discovered `RELEASE_NOTES_*.md` entries."""
-    discovered_notes = _discover_release_notes_entries(docs_dir)
+    """Prune release/governance items and inject discovered `RELEASE_NOTES_*.md` entries."""
+    discovered_notes = _discover_release_notes_entries(docs_dir, lang=lang)
     notes_inserted = False
     pruned: list[Any] = []
 
@@ -543,7 +799,7 @@ def _prune_releases_section(
                         pruned.extend(discovered_notes)
                         notes_inserted = True
             elif isinstance(target, list):
-                nested = _prune_nav_list(target, docs_dir, repo_root)
+                nested = _prune_nav_list(target, docs_dir, repo_root, lang=lang)
                 if nested:
                     pruned.append({title: nested})
 
@@ -562,6 +818,7 @@ def _prune_nav_list(
     items: list[Any],
     docs_dir: Path,
     repo_root: Path,
+    lang: str = "en",
 ) -> list[Any]:
     """Recursively prune missing pages and empty sections from a MkDocs navigation list."""
     pruned: list[Any] = []
@@ -579,14 +836,14 @@ def _prune_nav_list(
                         kept_dict[title] = target
                 elif isinstance(target, list):
                     nested = (
-                        _prune_releases_section(target, docs_dir, repo_root)
-                        if title == "Releases & Governance"
-                        else _prune_nav_list(target, docs_dir, repo_root)
+                        _prune_releases_section(target, docs_dir, repo_root, lang=lang)
+                        if title in _RELEASES_NAV_TITLES
+                        else _prune_nav_list(target, docs_dir, repo_root, lang=lang)
                     )
                     if nested:
                         kept_dict[title] = nested
                 elif isinstance(target, dict):
-                    nested_dict = _prune_nav_list([target], docs_dir, repo_root)
+                    nested_dict = _prune_nav_list([target], docs_dir, repo_root, lang=lang)
                     if nested_dict:
                         kept_dict[title] = nested_dict[0]
             if kept_dict:
@@ -594,24 +851,76 @@ def _prune_nav_list(
     return pruned
 
 
+def _strip_nav_prefix(items: list[Any], prefix: str) -> list[Any]:
+    """Strip a leading directory prefix (such as `'fr/'`) from string paths in nav."""
+    stripped: list[Any] = []
+    for entry in items:
+        if isinstance(entry, str):
+            stripped.append(entry[len(prefix) :] if entry.startswith(prefix) else entry)
+        elif isinstance(entry, dict):
+            updated: dict[str, Any] = {}
+            for title, target in entry.items():
+                if isinstance(target, str):
+                    updated[title] = target[len(prefix) :] if target.startswith(prefix) else target
+                elif isinstance(target, list):
+                    updated[title] = _strip_nav_prefix(target, prefix)
+                elif isinstance(target, dict):
+                    res = _strip_nav_prefix([target], prefix)
+                    if res:
+                        updated[title] = res[0]
+            stripped.append(updated)
+        else:
+            stripped.append(entry)
+    return stripped
+
+
+def _sync_alternate_switcher(config: Any, lang: str) -> None:
+    """Align `extra.alternate` language switcher URLs with the active versioned `site_url`."""
+    extra = config.get("extra") if isinstance(config, dict) else getattr(config, "extra", None)
+    if not isinstance(extra, dict):
+        return
+    alternate = extra.get("alternate")
+    if not isinstance(alternate, list):
+        return
+
+    en_base, fr_base = _derive_language_base_paths(
+        config.get("site_url") if isinstance(config, dict) else getattr(config, "site_url", None),
+        lang=lang,
+    )
+    for item in alternate:
+        if not isinstance(item, dict):
+            continue
+        item_lang = str(item.get("lang") or "").strip().lower()
+        if item_lang == "en":
+            item["link"] = en_base
+        elif item_lang == "fr":
+            item["link"] = fr_base
+
+
 def prune_nav_for_existing_files(
     nav: list[Any] | None,
     docs_dir: Path,
     repo_root: Path,
+    lang: str = "en",
 ) -> list[Any]:
     """Prune missing pages and empty sections while auto-discovering release notes."""
     if not nav:
         return []
-    return _prune_nav_list(list(nav), Path(docs_dir), Path(repo_root))
+    return _prune_nav_list(list(nav), Path(docs_dir), Path(repo_root), lang=lang)
 
 
 def on_config(config: Any) -> Any:
-    """Configure environment-driven `site_url`, `edit_uri`, GFM slugifier, and pruned nav."""
+    """Configure `site_url`, `edit_uri`, GFM slugifier, language switcher, and pruned nav."""
+    lang = _get_config_language(config)
     site_url = os.environ.get("FILECLEANER_DOCS_SITE_URL", "").strip()
     if site_url:
-        config.site_url = site_url.rstrip("/") + "/"
+        normalized_url = site_url.rstrip("/") + "/"
+        if lang == "fr" and not normalized_url.endswith("/fr/"):
+            normalized_url = f"{normalized_url}fr/"
+        config.site_url = normalized_url
 
     config.edit_uri = "edit/main/docs/" if _effective_repo_ref() == "main" else ""
+    _sync_alternate_switcher(config, lang=lang)
 
     mdx = getattr(config, "mdx_configs", None)
     if isinstance(mdx, dict):
@@ -622,26 +931,51 @@ def on_config(config: Any) -> Any:
     docs_dir = Path(config.docs_dir)
     repo_root = docs_dir.parent
     if getattr(config, "nav", None):
-        config.nav = prune_nav_for_existing_files(config.nav, docs_dir=docs_dir, repo_root=repo_root)
+        pruned_nav = prune_nav_for_existing_files(
+            config.nav, docs_dir=docs_dir, repo_root=repo_root, lang=lang
+        )
+        config.nav = _strip_nav_prefix(pruned_nav, "fr/") if lang == "fr" else pruned_nav
     return config
 
 
 def on_files(files: Files, config: Any) -> Files:
-    """Exclude sensitive runtime files and inject virtual root overviews and changelog."""
+    """Exclude sensitive runtime files, map localized roots, and inject language virtual docs."""
     from mkdocs.structure.files import File, Files as MkDocsFiles, InclusionLevel
+
+    lang = _get_config_language(config)
+    docs_dir = Path(config.docs_dir)
+    fr_docs_dir = docs_dir / "fr"
+    use_dir_urls = bool(getattr(config, "use_directory_urls", True))
+    site_dir = str(getattr(config, "site_dir", "site"))
 
     kept: list[File] = []
     for file_obj in list(files):
         if _EXCLUDED_TARGET_RE.search(file_obj.src_uri):
             file_obj.inclusion = InclusionLevel.EXCLUDED
             continue
+        if file_obj.inclusion == InclusionLevel.EXCLUDED:
+            continue
+        if lang == "fr" and file_obj.src_uri.startswith("fr/"):
+            rel_no_fr = file_obj.src_uri[len("fr/") :]
+            if rel_no_fr:
+                kept.append(
+                    File(
+                        path=rel_no_fr,
+                        src_dir=str(fr_docs_dir),
+                        dest_dir=site_dir,
+                        use_directory_urls=use_dir_urls,
+                        inclusion=InclusionLevel.INCLUDED,
+                    )
+                )
+            continue
         kept.append(file_obj)
 
-    if len(kept) != len(files):
-        files = MkDocsFiles(kept)
+    files = MkDocsFiles(kept)
 
-    repo_root = Path(config.docs_dir).parent
-    for virtual_uri, (source_rel, _) in VIRTUAL_DOCS.items():
+    repo_root = docs_dir.parent
+    allowed_virtuals = _VIRTUAL_DOCS_BY_LANG.get(lang, _VIRTUAL_DOCS_BY_LANG["en"])
+    for virtual_uri in allowed_virtuals:
+        source_rel, _ = VIRTUAL_DOCS[virtual_uri]
         src_path = repo_root / source_rel
         if src_path.is_file() and files.get_file_from_path(virtual_uri) is None:
             files.append(File.generated(config, virtual_uri, abs_src_path=str(src_path)))
@@ -650,17 +984,22 @@ def on_files(files: Files, config: Any) -> Files:
 
 
 def on_page_markdown(markdown: str, page: Any, config: Any, files: Files) -> str:
-    """Convert GitHub alerts, rewrite relative links, and adjust virtual doc edit URLs."""
+    """Convert GitHub alerts, rewrite relative links, and adjust virtual/localized edit URLs."""
     src = getattr(page.file, "src_uri", None) or str(page.file.src_path).replace("\\", "/")
     ref = _effective_repo_ref()
+    lang = _get_config_language(config)
     repo_url = (getattr(config, "repo_url", None) or DEFAULT_REPO_URL).rstrip("/")
     raw_docs = getattr(config, "docs_dir", None) or (
         config.get("docs_dir") if isinstance(config, dict) else None
     )
     docs_dir = Path(raw_docs) if raw_docs else None
 
+    repo_src = src
     if src in VIRTUAL_DOCS:
         page.edit_url = f"{repo_url}/edit/main/{VIRTUAL_DOCS[src][0]}" if ref == "main" else None
+    elif lang == "fr" and docs_dir is not None and (docs_dir / "fr" / src).is_file():
+        repo_src = f"fr/{src}"
+        page.edit_url = f"{repo_url}/edit/main/docs/fr/{src}" if ref == "main" else None
 
     available_root_docs: Iterable[str] | None = (
         [name for name in VIRTUAL_DOCS if files.get_file_from_path(name) is not None]
@@ -669,10 +1008,13 @@ def on_page_markdown(markdown: str, page: Any, config: Any, files: Files) -> str
     )
     return rewrite_relative_links(
         convert_github_alerts(markdown),
-        page_src_path=src,
+        page_src_path=repo_src,
+        output_src_path=src,
         ref=ref,
         repo_url=repo_url,
         docs_dir=docs_dir,
         use_directory_urls=bool(getattr(config, "use_directory_urls", True)),
         available_root_docs=available_root_docs,
+        lang=lang,
+        site_url=str(getattr(config, "site_url", "") or ""),
     )

@@ -776,7 +776,12 @@ fn all_documented_configs_and_examples_parse_and_validate() {
 
     let mut diataxis_docs_scanned = 0usize;
     let mut diataxis_validated_blocks = 0usize;
-    for rel_dir in ["docs/01-tutorials", "docs/02-how-to-guides"] {
+    for rel_dir in [
+        "docs/01-tutorials",
+        "docs/02-how-to-guides",
+        "docs/fr/01-tutoriels",
+        "docs/fr/02-guides-pratiques",
+    ] {
         let dir = root.join(rel_dir);
         assert!(dir.is_dir(), "{} directory must exist", dir.display());
         for path in collect_markdown_files(&dir) {
@@ -795,12 +800,12 @@ fn all_documented_configs_and_examples_parse_and_validate() {
         }
     }
     assert!(
-        diataxis_docs_scanned >= 2,
-        "expected Markdown files under docs/01-tutorials/ and docs/02-how-to-guides/"
+        diataxis_docs_scanned >= 10,
+        "expected >= 10 Markdown files across EN and FR tutorial/how-to directories"
     );
     assert!(
-        diataxis_validated_blocks >= 1,
-        "expected >= 1 validated config block across docs/01-tutorials/ and docs/02-how-to-guides/"
+        diataxis_validated_blocks >= 4,
+        "expected >= 4 validated config blocks across EN and FR tutorial/how-to directories"
     );
 
     let examples_dir = root.join("examples");

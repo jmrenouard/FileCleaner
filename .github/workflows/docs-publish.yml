@@ -6,6 +6,7 @@ on:
     paths:
       - "docs/**"
       - "mkdocs.yml"
+      - "mkdocs.fr.yml"
       - "README.md"
       - "README.fr.md"
       - "CHANGELOG.md"
@@ -23,6 +24,7 @@ on:
     paths:
       - "docs/**"
       - "mkdocs.yml"
+      - "mkdocs.fr.yml"
       - "README.md"
       - "README.fr.md"
       - "CHANGELOG.md"
@@ -99,8 +101,11 @@ jobs:
           for required_file in \
             site_dist/versions.json \
             site_dist/index.html \
+            site_dist/fr/index.html \
             site_dist/.htaccess \
             site_dist/main/index.html \
+            site_dist/main/versions.json \
+            site_dist/main/fr/index.html \
             site_dist/latest/index.html; do
             if [ ! -f "$required_file" ]; then
               echo "Missing required built documentation file: $required_file" >&2
@@ -176,3 +181,5 @@ jobs:
           curl -fsSL https://filecleaner.lightpath.fr/versions.json | grep -q '"version"'
           curl -fsSLI https://filecleaner.lightpath.fr/latest/
           curl -fsSLI https://filecleaner.lightpath.fr/main/
+          curl -fsSLI https://filecleaner.lightpath.fr/main/fr/
+          curl -fsSLI https://filecleaner.lightpath.fr/fr/

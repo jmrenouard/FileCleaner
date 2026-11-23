@@ -18,6 +18,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "docs-publish.yml"
 MKDOCS_CONFIG_PATH = REPO_ROOT / "mkdocs.yml"
+MKDOCS_FR_CONFIG_PATH = REPO_ROOT / "mkdocs.fr.yml"
 HOOKS_SCRIPT_PATH = REPO_ROOT / "scripts" / "mkdocs_hooks.py"
 BUILD_SCRIPT_PATH = REPO_ROOT / "scripts" / "build_versioned_docs.py"
 REQUIREMENTS_DOCS_PATH = REPO_ROOT / "requirements-docs.txt"
@@ -58,14 +59,14 @@ class _AttrDict(dict[str, Any]):
         self[key] = value
 
 
-def _load_mkdocs_config() -> dict[str, Any]:
-    assert MKDOCS_CONFIG_PATH.is_file(), "mkdocs.yml must exist at repository root"
-    loader = _MkDocsYamlLoader(MKDOCS_CONFIG_PATH.read_text(encoding="utf-8"))
+def _load_mkdocs_config(config_path: Path = MKDOCS_CONFIG_PATH) -> dict[str, Any]:
+    assert config_path.is_file(), f"{config_path.name} must exist at repository root"
+    loader = _MkDocsYamlLoader(config_path.read_text(encoding="utf-8"))
     try:
         parsed = loader.get_single_data()
     finally:
         loader.dispose()
-    assert isinstance(parsed, dict), "mkdocs.yml must parse into a YAML mapping"
+    assert isinstance(parsed, dict), f"{config_path.name} must parse into a YAML mapping"
     return parsed
 
 
@@ -197,6 +198,42 @@ def test_mkdocs_yml_configuration_and_security_exclusions() -> None:
     katex_js_text = katex_js.read_text(encoding="utf-8")
     assert "document$.subscribe" in katex_js_text
     assert "renderMathInElement" in katex_js_text
+
+    alt_langs = {item.get("lang") for item in extra.get("alternate", []) if isinstance(item, dict)}
+    assert {"en", "fr"} <= alt_langs
+    for fr_exclude in ("/fr/", "*_fr.md", "/overview-fr.md", "/01-tutoriels/", "/02-guides-pratiques/"):
+        assert fr_exclude in exclude_text, f"mkdocs.yml must exclude FR content '{fr_exclude}'"
+
+
+def test_mkdocs_fr_yml_configuration_and_language_isolation() -> None:
+    """Verify mkdocs.fr.yml isolates French documentation, configures Material FR, and sets alternate links."""
+    config = _load_mkdocs_config(MKDOCS_FR_CONFIG_PATH)
+
+    assert config.get("site_name") == "Documentation FileCleaner"
+    assert config.get("site_url") == "https://filecleaner.lightpath.fr/fr/"
+    assert config.get("docs_dir") == "docs"
+    assert "scripts/mkdocs_hooks.py" in config.get("hooks", [])
+    assert config.get("theme", {}).get("language") == "fr"
+
+    alt_langs = {
+        item.get("lang") for item in config.get("extra", {}).get("alternate", []) if isinstance(item, dict)
+    }
+    assert {"en", "fr"} <= alt_langs
+
+    raw_exclude = config.get("exclude_docs", "")
+    exclude_text = "\n".join(raw_exclude) if isinstance(raw_exclude, list) else str(raw_exclude)
+    for en_exclude in ("/index.md", "/en/", "*_en.md", "/01-tutorials/", "/02-how-to-guides/", "/03-reference/", "/04-explanation/"):
+        assert en_exclude in exclude_text, f"mkdocs.fr.yml must exclude EN content '{en_exclude}'"
+
+    tab_names = [next(iter(entry.keys())) for entry in config.get("nav", []) if isinstance(entry, dict)]
+    assert tab_names == [
+        "Accueil",
+        "Tutoriels",
+        "Guides pratiques",
+        "Référence",
+        "Explications",
+        "Versions et gouvernance",
+    ]
 
 
 # ==============================================================================
@@ -588,7 +625,72 @@ def test_mkdocs_hooks_on_config_edit_uri_and_virtual_edit_url(
         "https://github.com/jmrenouard/FileCleaner/edit/main/docs/overview-en.md",
     )
     hooks.on_page_markdown("# Overview\n", page_tag, cfg_tag, _FakeFiles())
-    assert not page_tag.edit_url
+    assert page_tag.edit_url is None or not page_tag.edit_url
+
+
+def test_mkdocs_hooks_fr_language_isolation_and_alternate_links(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Verify FR config syncs alternate links, strips fr/ nav prefix, and rewrites cross-language URLs."""
+    hooks = _load_script_module("mkdocs_hooks_fr", HOOKS_SCRIPT_PATH)
+    docs_dir = tmp_path / "docs"
+    (docs_dir / "fr" / "01-tutoriels").mkdir(parents=True)
+    (docs_dir / "fr" / "index.md").write_text("# Accueil\n", encoding="utf-8")
+    (docs_dir / "fr" / "01-tutoriels" / "index.md").write_text("# Tutoriels\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("# EN\n", encoding="utf-8")
+    (tmp_path / "README.fr.md").write_text("# FR\n", encoding="utf-8")
+
+    monkeypatch.setenv("FILECLEANER_DOCS_REF", "WORKTREE")
+    monkeypatch.setenv("FILECLEANER_DOCS_SITE_URL", "https://filecleaner.lightpath.fr/v1.0.1/")
+    cfg_fr = _AttrDict(
+        {
+            "docs_dir": str(docs_dir),
+            "site_url": "https://filecleaner.lightpath.fr/fr/",
+            "edit_uri": "",
+            "repo_url": "https://github.com/jmrenouard/FileCleaner",
+            "theme": {"language": "fr"},
+            "extra": {
+                "alternate": [
+                    {"name": "Français", "link": "/main/fr/", "lang": "fr"},
+                    {"name": "English", "link": "/main/", "lang": "en"},
+                ]
+            },
+            "mdx_configs": {"toc": {}},
+            "nav": [
+                {"Accueil": "fr/index.md"},
+                {"Tutoriels": ["fr/01-tutoriels/index.md"]},
+            ],
+        }
+    )
+    hooks.on_config(cfg_fr)
+    assert cfg_fr["site_url"] == "https://filecleaner.lightpath.fr/v1.0.1/fr/"
+    alt_map = {item["lang"]: item["link"] for item in cfg_fr["extra"]["alternate"]}
+    assert alt_map == {"en": "/v1.0.1/", "fr": "/v1.0.1/fr/"}
+    assert cfg_fr["nav"] == [
+        {"Accueil": "index.md"},
+        {"Tutoriels": ["01-tutoriels/index.md"]},
+    ]
+
+    rewritten_fr = hooks.rewrite_relative_links(
+        "[English](../../../README.md) · [Home](../index.md)",
+        page_src_path="fr/01-tutoriels/index.md",
+        output_src_path="01-tutoriels/index.md",
+        lang="fr",
+        site_url="https://filecleaner.lightpath.fr/main/fr/",
+        docs_dir=docs_dir,
+    )
+    assert "](/main/overview-en/)" in rewritten_fr
+    assert "](../index.md)" in rewritten_fr
+
+    rewritten_en = hooks.rewrite_relative_links(
+        "[Français](README.fr.md)",
+        page_src_path="overview-en.md",
+        lang="en",
+        site_url="https://filecleaner.lightpath.fr/main/",
+        docs_dir=docs_dir,
+    )
+    assert "](/main/fr/overview-fr/)" in rewritten_en
 
 
 def test_mkdocs_hooks_importable_without_mkdocs_or_pathspec(
@@ -766,17 +868,32 @@ def test_build_versioned_docs_end_to_end_worktree_v101_and_v100(tmp_path: Path) 
     expected_files = [
         out_dir / "versions.json",
         out_dir / "index.html",
+        out_dir / "fr" / "index.html",
         out_dir / ".htaccess",
         out_dir / "latest" / "index.html",
         out_dir / "dev" / "index.html",
         out_dir / "main" / "index.html",
+        out_dir / "main" / "versions.json",
+        out_dir / "main" / "fr" / "index.html",
+        out_dir / "main" / "fr" / "03-reference" / "index.html",
         out_dir / "main" / "stylesheets" / "extra.css",
         out_dir / "main" / "javascripts" / "katex.js",
         out_dir / "v1.0.1" / "index.html",
+        out_dir / "v1.0.1" / "fr" / "index.html",
         out_dir / "v1.0.0" / "index.html",
+        out_dir / "v1.0.0" / "fr" / "index.html",
     ]
     for path in expected_files:
         assert path.is_file(), f"Expected built artifact missing: {path}"
+
+    assert '<html lang="fr"' in (out_dir / "main" / "fr" / "index.html").read_text(encoding="utf-8")
+    assert '<html lang="en"' in (out_dir / "main" / "index.html").read_text(encoding="utf-8")
+
+    fr_versions = json.loads((out_dir / "main" / "versions.json").read_text(encoding="utf-8"))
+    fr_by_ver = {entry["version"]: entry for entry in fr_versions}
+    assert "../main/fr" in fr_by_ver
+    assert "../v1.0.1/fr" in fr_by_ver
+    assert "fr" in fr_by_ver["../main/fr"]["aliases"]
 
     manifest = json.loads((out_dir / "versions.json").read_text(encoding="utf-8"))
     assert isinstance(manifest, list)
@@ -830,6 +947,7 @@ def test_docs_publish_workflow_triggers_permissions_build_and_sftp_deploy() -> N
     for required_path in (
         "docs/**",
         "mkdocs.yml",
+        "mkdocs.fr.yml",
         "README.md",
         "README.fr.md",
         "CHANGELOG.md",
@@ -906,6 +1024,9 @@ def test_docs_publish_workflow_triggers_permissions_build_and_sftp_deploy() -> N
     assert "WORKTREE" in build_run_script
     assert "site_dist/versions.json" in build_run_script
     assert "site_dist/.htaccess" in build_run_script
+    assert "site_dist/fr/index.html" in build_run_script
+    assert "site_dist/main/fr/index.html" in build_run_script
+    assert "site_dist/main/versions.json" in build_run_script
 
     upload_steps = [s for s in build_steps if str(s.get("uses", "")).startswith("actions/upload-artifact@")]
     assert len(upload_steps) == 1
@@ -956,6 +1077,8 @@ def test_docs_publish_workflow_triggers_permissions_build_and_sftp_deploy() -> N
     assert "https://filecleaner.lightpath.fr/versions.json" in deploy_run_script
     assert "https://filecleaner.lightpath.fr/latest/" in deploy_run_script
     assert "https://filecleaner.lightpath.fr/main/" in deploy_run_script
+    assert "https://filecleaner.lightpath.fr/main/fr/" in deploy_run_script
+    assert "https://filecleaner.lightpath.fr/fr/" in deploy_run_script
 
     for unsafe_pattern in (
         "chmod 777",

@@ -27,11 +27,11 @@ Two primary design constraints govern the engine architecture:
 
 ```mermaid
 flowchart TB
-    BIN["filecleaner Binary (Rust 2021, 9 Targets)"] --> CFG["Config & CLI\nclap v4 · serde · toml · serde_yaml_ng · chrono"]
-    BIN --> SCAN["Scan & Match\nwalkdir · globset · regex"]
-    BIN --> COMP["Pure-Rust Codecs\nflate2 (miniz_oxide) · lz4_flex · brotli · zip (deflate)"]
-    BIN --> S3["Pure-Rust S3 & SigV4\nureq v3 (rustls-no-provider) · rustls · rustls-rustcrypto · hmac · sha2 · base64"]
-    BIN --> OS["OS & Daemon\nnotify · ctrlc · std::fs::FileTimes · #[cfg(unix)] libc · Windows share_mode(0)"]
+    BIN["filecleaner Binary (Rust 2021, 9 Targets)"] --> CFG["Config & CLI<br/>clap v4 · serde · toml · serde_yaml_ng · chrono"]
+    BIN --> SCAN["Scan & Match<br/>walkdir · globset · regex"]
+    BIN --> COMP["Pure-Rust Codecs<br/>flate2 (miniz_oxide) · lz4_flex · brotli · zip (deflate)"]
+    BIN --> S3["Pure-Rust S3 & SigV4<br/>ureq v3 (rustls-no-provider) · rustls · rustls-rustcrypto · hmac · sha2 · base64"]
+    BIN --> OS["OS & Daemon<br/>notify · ctrlc · std::fs::FileTimes · #[cfg(unix)] libc · Windows share_mode(0)"]
 ```
 
 ## Options Considered and Trade-Offs

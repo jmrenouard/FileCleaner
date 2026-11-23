@@ -35,12 +35,12 @@ Every rule sweep executes six strictly ordered, fail-closed phases:
 
 ```mermaid
 flowchart LR
-    P1["1. Scan\nWalkdir + Filters\nTimeBasis Sort"] --> P2["2. InUseProbe\n6-Layer Matrix\nPartition S_busy"]
-    P2 --> P3["3. BackupGuard\nF_valid >= B_min\nStaleness + P_floor"]
-    P3 --> P4["4. RetentionEval\nCount / Age / Size\nSweepPlan"]
-    P4 --> P5["5. PreHook\nEnv + Args (No Shell)\nExit 0 / 42 / Policy"]
-    P5 --> P6["6. Execute\nAtomic / SHA-256\nOr DryRun Parity"]
-    P6 --> AUD["JSONL Audit Log &\nDaemon State JSON"]
+    P1["1. Scan<br/>Walkdir + Filters<br/>TimeBasis Sort"] --> P2["2. InUseProbe<br/>6-Layer Matrix<br/>Partition S_busy"]
+    P2 --> P3["3. BackupGuard<br/>F_valid >= B_min<br/>Staleness + P_floor"]
+    P3 --> P4["4. RetentionEval<br/>Count / Age / Size<br/>SweepPlan"]
+    P4 --> P5["5. PreHook<br/>Env + Args (No Shell)<br/>Exit 0 / 42 / Policy"]
+    P5 --> P6["6. Execute<br/>Atomic / SHA-256<br/>Or DryRun Parity"]
+    P6 --> AUD["JSONL Audit Log &<br/>Daemon State JSON"]
 ```
 
 Design guarantees enforced across every phase:
@@ -833,10 +833,10 @@ Valid `status` values: `"starting"`, `"idle"`, `"sweeping"`, `"stopping"`, `"sto
 
 ```mermaid
 sequenceDiagram
-    participant OS as OS Signal / Stop-File
+    participant OS as OS Signal or Stop-File
     participant D as Daemon Event Loop
     participant E as Active Sweep Engine
-    participant S as State JSON & PID File
+    participant S as State JSON and PID File
 
     D->>S: Write PID + status="starting" (atomic .fc-tmp)
     loop While !shutdown && sweeps < max_sweeps

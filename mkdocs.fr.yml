@@ -1,0 +1,176 @@
+site_name: Documentation FileCleaner
+site_description: Moteur déterministe de rétention de répertoires en Rust pur, garde-fous de sauvegarde, détection active en 6 couches, archivage S3 et démon
+site_url: https://filecleaner.lightpath.fr/fr/
+repo_name: jmrenouard/FileCleaner
+repo_url: https://github.com/jmrenouard/FileCleaner
+edit_uri: edit/main/docs/
+copyright: Copyright &copy; 2026 Jean-Marie Renouard &middot; LightPath
+
+docs_dir: docs
+exclude_docs: |
+  *.kdbx
+  *.keyx
+  *.fc-tmp
+  *.pid
+  *.log
+  .env
+  .env.*
+  /index.md
+  /en/
+  *_en.md
+  *-en.md
+  /overview-en.md
+  /01-tutorials/
+  /02-how-to-guides/
+  /03-reference/
+  /04-explanation/
+  /team-sessions/
+
+hooks:
+  - scripts/mkdocs_hooks.py
+
+theme:
+  name: material
+  language: fr
+  logo: assets/logo.svg
+  favicon: assets/logo.svg
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - navigation.tracking
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: cyan
+      toggle:
+        icon: material/brightness-7
+        name: Passer en mode sombre
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: cyan
+      toggle:
+        icon: material/brightness-4
+        name: Passer en mode clair
+
+plugins:
+  - search
+
+extra:
+  alternate:
+    - name: Français
+      link: /main/fr/
+      lang: fr
+    - name: English
+      link: /main/
+      lang: en
+  version:
+    provider: mike
+    default: latest
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/jmrenouard/FileCleaner
+      name: FileCleaner sur GitHub
+    - icon: fontawesome/brands/docker
+      link: https://hub.docker.com/r/jmrenouard/filecleaner
+      name: FileCleaner sur Docker Hub
+    - icon: fontawesome/solid/globe
+      link: https://www.lightpath.fr
+      name: LightPath
+
+extra_css:
+  - https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css
+  - stylesheets/extra.css
+
+extra_javascript:
+  - javascripts/katex.js
+  - https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js
+  - https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+
+nav:
+  - Accueil: fr/index.md
+  - Tutoriels:
+      - fr/01-tutoriels/index.md
+      - Bac à sable de rétention locale: fr/01-tutoriels/01-bac-a-sable-retention-locale.md
+      - Laboratoire Backup Guard et détection active: fr/01-tutoriels/02-laboratoire-backup-guard-et-in-use.md
+      - Laboratoire Docker PostgreSQL WAL et S3: fr/01-tutoriels/03-laboratoire-docker-postgres-wal-s3.md
+      - HOWTO 5 minutes: fr/HOWTO.md
+  - Guides pratiques:
+      - fr/02-guides-pratiques/index.md
+      - Déploiement:
+          - Déployer avec Docker et systemd: fr/02-guides-pratiques/deploiement/deployer-filecleaner-docker-et-systemd.md
+      - Exploitation:
+          - Configurer la rétention et l'archivage S3: fr/02-guides-pratiques/exploitation/configurer-retention-et-archivage-s3.md
+          - Exécuter le démon réactif et rotation des journaux: fr/02-guides-pratiques/exploitation/executer-demon-reactif-et-rotation-journaux.md
+      - Gestion des incidents:
+          - Résoudre un gel de sauvegarde ou échec S3: fr/02-guides-pratiques/gestion-incidents/resoudre-gel-sauvegarde-ou-echec-s3.md
+      - Sécurité:
+          - Appliquer les hooks pré-suppression et protections TOCTOU: fr/02-guides-pratiques/securite/appliquer-hooks-pre-suppression-et-toctou.md
+      - Recettes de production:
+          - Exemples et recettes: fr/EXEMPLES_RECETTES.md
+  - Référence:
+      - fr/03-reference/index.md
+      - Configuration:
+          - Schéma de configuration et invariants: fr/03-reference/configuration/schema-configuration-et-invariants.md
+      - CLI et scripts:
+          - Commandes CLI et codes de sortie: fr/03-reference/cli-et-scripts/commandes-cli-et-codes-sortie.md
+      - Codes d'erreurs:
+          - Matrice des erreurs et alertes: fr/03-reference/codes-erreurs/matrice-erreurs-et-alertes.md
+      - Manuels complets:
+          - Guide utilisateur: fr/GUIDE_UTILISATEUR.md
+          - Spécifications formelles: fr/SPECIFICATIONS.md
+  - Explications:
+      - fr/04-explications/index.md
+      - Vue d'architecture:
+          - Pipeline fail-closed en 6 phases: fr/04-explications/vue-architecture/pipeline-fail-closed-six-phases.md
+      - Décisions d'architecture:
+          - ADR-001 Moteur pur-Rust fail-closed: fr/04-explications/decisions-architecture/adr-001-moteur-pur-rust-fail-closed.md
+          - ADR-002 Publication Diátaxis et MkDocs versionnée: fr/04-explications/decisions-architecture/adr-002-publication-diataxis-mkdocs-versionnee.md
+      - Analyses internes:
+          - Calcul de rétention et défenses TOCTOU: fr/04-explications/analyses-internes/calcul-retention-et-defenses-toctou.md
+      - Présentation du projet:
+          - Aperçu du projet: overview-fr.md
+  - Versions et gouvernance:
+      - Journal des versions: CHANGELOG.md
+      - Notes de version v1.0.1: RELEASE_NOTES_v1.0.1.md
+      - Journal d'actions: ACTION_LOGBOOK.md
+      - Registre RCA: RCA_REGISTER.md
