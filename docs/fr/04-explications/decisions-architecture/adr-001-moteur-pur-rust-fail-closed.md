@@ -28,7 +28,7 @@ flowchart TB
 
 ## Conséquences
 
-- **Positif** : binaire autonome portable, empreinte mémoire déterministe, image Docker `scratch`/non-root (`65532:65532`) sans shell installé, zéro risque d'injection de commande dans les hooks.
+- **Positif** : binaire autonome portable, empreinte mémoire déterministe, image Docker `debian:bookworm-slim` non-root (`10001:10001`, `fcuser:fcgroup`) sans interpréteur appelé, zéro risque d'injection de commande dans les hooks.
 - **Compromis** : le temps de compilation initial inclut les crates cryptographiques et de compression pur-Rust, et le binaire ne délègue pas les formats propriétaires externes comme `zstd` natif tant qu'une dépendance pure n'est pas activée.
 
 ## Références

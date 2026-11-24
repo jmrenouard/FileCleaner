@@ -57,7 +57,7 @@ FileCleaner accepte les formats `.toml`, `.yaml` et `.yml` via `Config::from_fil
 | `filename_date_regex` / `filename_date_format` | `string` | Extraction de date dans le nom de fichier |
 | `max_files` / `max_age` / `max_total_size` | `usize` / Durée / Taille | Plafonds de rétention |
 | `combine_mode` | `any` \| `all` | Union (`any`) ou intersection (`all`) des seuils |
-| `eviction_order` | `oldest_first` \| `largest_first` \| `smallest_first` | Ordre d'éviction déterministe |
+| `eviction_order` | `oldest_first` \| `largest_first` | Ordre d'éviction déterministe |
 | `actions` | `rename_by_date`, `compress`, `move`, `copy_truncate`, `upload_s3`, `trash`, `delete` | Pipeline ordonné d'actions |
 | `compression` | `gzip` \| `lz4` \| `brotli` \| `zip` | Codec pur-Rust utilisé par `compress` |
 | `backup_guard.min_keep_files` | `usize` | Plancher inconditionnel des plus récentes sauvegardes valides |

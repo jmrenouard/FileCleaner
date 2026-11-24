@@ -98,10 +98,10 @@ Multi-architecture images (`linux/amd64` and `linux/arm64`) run as unprivileged 
 
 ```bash
 # Verify image version cleanly
-docker run --rm jmrenouard/filecleaner:1.1.0 --version
+docker run --rm jmrenouard/filecleaner:v1.0.1 --version
 
 # Preview cleanup on a host directory mounted into /data
-docker run --rm -v "$(pwd)/data:/data" jmrenouard/filecleaner:1.1.0 plan --dir /data --max-age 14d
+docker run --rm -v "$(pwd)/data:/data" jmrenouard/filecleaner:v1.0.1 plan --dir /data --max-age 14d
 ```
 
 ---

@@ -73,7 +73,7 @@ filecleaner check-in-use --idle-age 30s --stability 2s /var/spool/ingest/sample.
 filecleaner run -c /etc/filecleaner/spool.toml --json
 ```
 
-Vérifiez que `skipped_by_hook` incrémente dans le résumé JSON lorsque `.hold` existe et que `follow_symlinks = false` reste actif.
+Vérifiez que `skipped_hook` incrémente dans le résumé JSON lorsque `.hold` existe et que `follow_symlinks = false` reste actif.
 
 ## Retour arrière
 

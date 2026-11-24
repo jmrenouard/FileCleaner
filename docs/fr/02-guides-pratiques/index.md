@@ -1,6 +1,6 @@
 # Guides pratiques FileCleaner
 
-Utilisez ces modes opératoires pour déployer, configurer, sécuriser et dépanner FileCleaner en production. Chaque procédure suit des étapes courtes et vérifiables.
+Utilisez ces modes opératoires pour déployer, configurer, verrouiller et dépanner FileCleaner en production. Chaque procédure suit des étapes courtes et vérifiables.
 
 ## Modes opératoires disponibles
 

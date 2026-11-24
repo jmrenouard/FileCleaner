@@ -98,10 +98,10 @@ Les images multiplateformes (`linux/amd64` et `linux/arm64`) s'exécutent sous l
 
 ```bash
 # Vérifier la version de l'image
-docker run --rm jmrenouard/filecleaner:1.1.0 --version
+docker run --rm jmrenouard/filecleaner:v1.0.1 --version
 
 # Simuler un nettoyage sur un dossier hôte monté dans /data
-docker run --rm -v "$(pwd)/data:/data" jmrenouard/filecleaner:1.1.0 plan --dir /data --max-age 14d
+docker run --rm -v "$(pwd)/data:/data" jmrenouard/filecleaner:v1.0.1 plan --dir /data --max-age 14d
 ```
 
 ---

@@ -42,9 +42,16 @@ sudo systemctl enable --now filecleaner.service
 ## Exécuter en conteneur Docker non-root
 
 > [!NOTE]
-> L'image officielle exécute un binaire statique sous l'identifiant non-root `65532:65532`. Montez vos dossiers cibles en lecture-écriture et votre fichier de configuration en lecture seule.
+> L'image officielle repose sur `debian:bookworm-slim` sous l'identifiant non-root `10001:10001` (`fcuser:fcgroup`). Montez vos dossiers cibles en lecture-écriture et votre configuration en lecture seule.
 
-1. Lancez un premier plan de simulation sans modification de fichiers :
+1. Appliquez les droits `10001:10001` sur les fichiers et répertoires hôtes :
+
+```bash
+sudo chown 10001:10001 /etc/filecleaner/policy.toml
+sudo chown -R 10001:10001 /var/backups/app /var/log/filecleaner
+```
+
+2. Lancez un premier plan de simulation sans modification de fichiers :
 
 ```bash
 docker run --rm \
@@ -55,7 +62,7 @@ docker run --rm \
   plan -c /etc/filecleaner/policy.toml
 ```
 
-2. Vérifiez le plan affiché puis démarrez le service en tâche de fond avec `--restart unless-stopped`.
+3. Vérifiez le plan affiché puis démarrez le service en tâche de fond avec `--restart unless-stopped`.
 
 ## Validation
 

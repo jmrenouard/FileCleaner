@@ -304,6 +304,25 @@ fn howto_init_validate_and_service_template_cli_workflow() {
     assert!(tpl_text.contains("User=filecleaner"));
 }
 
+fn write_skip_42_hook(dir: &Path) -> std::path::PathBuf {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let p = dir.join("hook-veto-42.sh");
+        fs::write(&p, "#!/bin/sh\nexit 42\n").expect("write unix veto hook");
+        let mut perms = fs::metadata(&p).expect("hook metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&p, perms).expect("chmod +x hook");
+        p
+    }
+    #[cfg(windows)]
+    {
+        let p = dir.join("hook-veto-42.cmd");
+        fs::write(&p, "@exit /b 42\r\n").expect("write windows veto hook");
+        p
+    }
+}
+
 #[test]
 fn howto_pre_delete_hook_skip_veto_and_version_cli() {
     let ver_out = Command::new(filecleaner_bin())
@@ -345,4 +364,31 @@ fn howto_pre_delete_hook_skip_veto_and_version_cli() {
     );
     let _: serde_json::Value = serde_json::from_slice(&adhoc_plan.stdout).expect("adhoc plan JSON");
     assert!(sample.is_file(), "plan must never mutate files");
+
+    let hook = write_skip_42_hook(tmp.path());
+    let veto_run = Command::new(filecleaner_bin())
+        .args(["run", "--dir"])
+        .arg(&target)
+        .args(["--include", "*.dat", "--max-age", "5d", "--pre-hook"])
+        .arg(&hook)
+        .arg("--json")
+        .output()
+        .expect("run ad-hoc sweep with exit-42 hook");
+    assert_eq!(
+        veto_run.status.code(),
+        Some(0),
+        "exit-42 skip veto must return exit 0, stderr: {}",
+        String::from_utf8_lossy(&veto_run.stderr)
+    );
+    let veto_json: serde_json::Value =
+        serde_json::from_slice(&veto_run.stdout).expect("valid JSON from hook run");
+    let hook_skips = veto_json["rule_reports"][0]["skipped_hook"]
+        .as_u64()
+        .or_else(|| veto_json["summary"]["rules"][0]["skipped_hook"].as_u64())
+        .unwrap_or_else(|| panic!("missing skipped_hook count in JSON: {veto_json}"));
+    assert_eq!(hook_skips, 1, "expected 1 hook veto skip in {veto_json}");
+    assert!(
+        sample.is_file(),
+        "exit-42 pre-delete hook must preserve candidate"
+    );
 }

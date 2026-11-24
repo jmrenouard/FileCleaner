@@ -23,9 +23,9 @@ Le binaire `filecleaner` expose six sous-commandes principales pour la validatio
 | `check-in-use <PATH>...` | `--idle-age`, `--stability`, `--sidecar-ext`, `--no-flock`, `--no-proc-fd`, `--no-windows-share` | Exécute les 6 sondes de détection active sur un ou plusieurs fichiers |
 | `validate [PATH]` | `[PATH]` ou `-c <PATH>` | Parse et contrôle la configuration contre tous les invariants |
 | `init` | `-o <PATH>`, `--profile <backups\|logs\|spool\|dba-postgres>`, `--format <toml\|yaml>`, `--force` | Génère une configuration initiale sécurisée (`dry_run = true`) |
-| `daemon run` | `-c <PATH>`, `--dry-run`, `--json` | Démarre le démon au premier plan (`interval`, `notify` ou `hybrid`) |
-| `daemon status` | `-c <PATH>`, `--json` | Contrôle la vivacité du PID et l'état JSON courant du démon |
-| `daemon stop` | `-c <PATH>`, `--json` | Déclenche l'arrêt coopératif via `stop_file` et `SIGTERM` (Unix) |
+| `daemon run` | `-c <PATH>`, `--mode <interval\|notify\|hybrid>`, `--dry-run`, `--max-sweeps <N>`, `--fail-on-freeze`, `--strict-constraints`, `--json` | Démarre le démon au premier plan (`interval`, `notify` ou `hybrid`) |
+| `daemon status` | `-c <PATH>`, `--pid-file <PATH>`, `--state-file <PATH>`, `--dry-run`, `--json` | Contrôle la vivacité du PID et l'état JSON courant du démon |
+| `daemon stop` | `-c <PATH>`, `--pid-file <PATH>`, `--stop-file <PATH>`, `--timeout <DURATION>`, `--dry-run`, `--json` | Déclenche l'arrêt coopératif via `stop_file` et `SIGTERM` (Unix) |
 | `daemon service-template` | `--init-system <systemd\|launchd\|windows-task>`, `-c`, `--user`, `-o` | Génère le modèle de service système prêt à déployer |
 
 ## Codes de sortie

@@ -85,7 +85,7 @@ Rules with `dry_run = false` immediately compress, move, or delete files.
 6. Pull the official Docker container image:
 
    ```bash
-   docker pull jmrenouard/filecleaner:1.1.0
+   docker pull jmrenouard/filecleaner:v1.0.1
    ```
 
 7. Start container `filecleaner-daemon` with the mounted configuration and volume paths:
@@ -99,7 +99,7 @@ Rules with `dry_run = false` immediately compress, move, or delete files.
      -v /mnt/cold-archive/app:/mnt/cold-archive/app \
      -v /var/lib/filecleaner:/var/lib/filecleaner \
      -v /var/log/filecleaner:/var/log/filecleaner \
-     jmrenouard/filecleaner:1.1.0 \
+     jmrenouard/filecleaner:v1.0.1 \
      daemon run --config /etc/filecleaner/filecleaner.toml
    ```
 

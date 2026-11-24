@@ -29,7 +29,7 @@ Hors situation de gel, les $K = \text{min\_keep\_files}$ sauvegardes les plus r�
 
 ## Évaluation ensembliste des plafonds de rétention
 
-Sur les candidats éligibles triés selon `eviction_order` (`oldest_first`, `largest_first` ou `smallest_first`), trois violations élémentaires évaluent si la conservation de $f_i$ dépasse un plafond :
+Sur les candidats éligibles triés selon `eviction_order` (`oldest_first` ou `largest_first`), trois violations élémentaires évaluent si la conservation de $f_i$ dépasse un plafond :
 
 - Dépassement de compte : le rang de récence excède `max_files`.
 - Dépassement d'âge : $t_{\text{now}} - t_i > \text{max\_age}$.
