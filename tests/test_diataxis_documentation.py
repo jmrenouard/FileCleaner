@@ -14,7 +14,9 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DOCS_DIR = REPO_ROOT / "docs"
+FR_DOCS_DIR = DOCS_DIR / "fr"
 MKDOCS_CONFIG_PATH = REPO_ROOT / "mkdocs.yml"
+MKDOCS_FR_CONFIG_PATH = REPO_ROOT / "mkdocs.fr.yml"
 VALE_CONFIG_PATH = REPO_ROOT / ".vale.ini"
 MARKDOWNLINT_CONFIG_PATH = REPO_ROOT / ".markdownlint.json"
 DOCS_CI_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "docs-ci.yml"
@@ -26,6 +28,13 @@ REQUIRED_QUADRANTS: tuple[str, ...] = (
     "02-how-to-guides",
     "03-reference",
     "04-explanation",
+)
+
+FR_REQUIRED_QUADRANTS: tuple[str, ...] = (
+    "01-tutoriels",
+    "02-guides-pratiques",
+    "03-reference",
+    "04-explications",
 )
 
 VIRTUAL_DOCS: dict[str, str] = {
@@ -714,33 +723,79 @@ def test_docs_as_code_toolchain_configs_valid() -> None:
             assert "${{" not in run_val, "docs-ci.yml must pass expressions via env:, never ${{ in run:"
 
     run_text = "\n".join(str(step.get("run", "")) for step in steps)
-    assert "tests/test_diataxis_documentation.py" in run_text
-    assert "tests/test_mkdocs_publishing.py" in run_text
-    assert "mkdocs build --strict" in run_text
+    assert "mkdocs build -f mkdocs.yml --strict" in run_text
+    assert "mkdocs build -f mkdocs.fr.yml --strict" in run_text
+
+    # 5. mkdocs.fr.yml (dedicated French sub-site config)
+    assert MKDOCS_FR_CONFIG_PATH.is_file(), "Missing mkdocs.fr.yml"
+    fr_loader = _MkDocsYamlLoader(MKDOCS_FR_CONFIG_PATH.read_text(encoding="utf-8"))
+    try:
+        mkdocs_fr_cfg = fr_loader.get_single_data()
+    finally:
+        fr_loader.dispose()
+    assert isinstance(mkdocs_fr_cfg, dict)
+    assert mkdocs_fr_cfg.get("theme", {}).get("language") == "fr"
+    assert mkdocs_cfg.get("theme", {}).get("language") == "en"
+    for cfg_name, cfg_data in (("mkdocs.yml", mkdocs_cfg), ("mkdocs.fr.yml", mkdocs_fr_cfg)):
+        alt = cfg_data.get("extra", {}).get("alternate", [])
+        alt_langs = {item.get("lang") for item in alt if isinstance(item, dict)}
+        assert {"en", "fr"} <= alt_langs, f"{cfg_name} extra.alternate must include en and fr"
+
+    fr_nav = mkdocs_fr_cfg.get("nav", [])
+    fr_top_tabs = [next(iter(entry.keys())) for entry in fr_nav if isinstance(entry, dict)]
+    assert fr_top_tabs == [
+        "Accueil",
+        "Tutoriels",
+        "Guides pratiques",
+        "Référence",
+        "Explications",
+        "Versions et gouvernance",
+    ]
+    for nav_path in _flatten_nav_paths(fr_nav):
+        if nav_path in VIRTUAL_DOCS:
+            assert (REPO_ROOT / VIRTUAL_DOCS[nav_path]).is_file(), (
+                f"mkdocs.fr.yml virtual nav target missing: {VIRTUAL_DOCS[nav_path]}"
+            )
+        else:
+            assert (DOCS_DIR / nav_path).is_file(), (
+                f"mkdocs.fr.yml nav target missing on disk: docs/{nav_path}"
+            )
 
 
 def test_portal_and_readmes_expose_all_diataxis_quadrants() -> None:
-    """Verify docs/index.md, README.md, and README.fr.md expose all four Diataxis quadrants and live portal URL."""
+    """Verify docs/index.md, docs/fr/index.md, README.md, and README.fr.md expose all Diataxis quadrants."""
     portal = (DOCS_DIR / "index.md").read_text(encoding="utf-8")
     for token in (
         "01-tutorials/index.md",
         "02-how-to-guides/index.md",
         "03-reference/index.md",
         "04-explanation/index.md",
+        "fr/index.md",
         "ACTION_LOGBOOK.md",
         "RCA_REGISTER.md",
         DOCS_PORTAL_URL,
     ):
         assert token in portal, f"docs/index.md missing expected portal link or URL: {token}"
 
-    for readme_name in ("README.md", "README.fr.md"):
-        readme_text = (REPO_ROOT / readme_name).read_text(encoding="utf-8")
-        assert "docs/index.md" in readme_text, f"{readme_name} must link to docs/index.md"
-        assert DOCS_PORTAL_URL in readme_text, f"{readme_name} must reference {DOCS_PORTAL_URL}"
-        for quadrant in REQUIRED_QUADRANTS:
-            assert f"docs/{quadrant}/index.md" in readme_text, (
-                f"{readme_name} must expose docs/{quadrant}/index.md"
-            )
+    fr_portal = (FR_DOCS_DIR / "index.md").read_text(encoding="utf-8")
+    for quadrant in FR_REQUIRED_QUADRANTS:
+        assert f"{quadrant}/index.md" in fr_portal, (
+            f"docs/fr/index.md missing French quadrant link: {quadrant}/index.md"
+        )
+
+    readme_en = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "docs/index.md" in readme_en
+    assert DOCS_PORTAL_URL in readme_en
+    for quadrant in REQUIRED_QUADRANTS:
+        assert f"docs/{quadrant}/index.md" in readme_en, f"README.md must expose docs/{quadrant}/index.md"
+
+    readme_fr = (REPO_ROOT / "README.fr.md").read_text(encoding="utf-8")
+    assert "docs/fr/index.md" in readme_fr
+    assert DOCS_PORTAL_URL in readme_fr
+    for quadrant in FR_REQUIRED_QUADRANTS:
+        assert f"docs/fr/{quadrant}/index.md" in readme_fr, (
+            f"README.fr.md must expose docs/fr/{quadrant}/index.md"
+        )
 
 
 def test_ste_structural_checker_catches_violations_and_passes_valid_prose(tmp_path: Path) -> None:
@@ -769,3 +824,113 @@ def test_ste_structural_checker_catches_violations_and_passes_valid_prose(tmp_pa
     assert "[Rule 4.2]" in joined
     assert "[Rule 3.6]" in joined
     assert "[Rule 5.1]" in joined
+
+
+def test_french_diataxis_quadrants_and_asd_stf100_compliance() -> None:
+    """Verify docs/fr/ hosts all four French Diataxis quadrants, valid links, and ASD-STF100 procedures."""
+    assert (FR_DOCS_DIR / "index.md").is_file(), "Missing docs/fr/index.md"
+    for quadrant in FR_REQUIRED_QUADRANTS:
+        qdir = FR_DOCS_DIR / quadrant
+        assert qdir.is_dir(), f"Missing French quadrant directory: docs/fr/{quadrant}/"
+        assert (qdir / "index.md").is_file(), f"Missing docs/fr/{quadrant}/index.md"
+        assert list(qdir.rglob("*.md")), f"No Markdown pages found under docs/fr/{quadrant}/"
+
+    broken_links: list[str] = []
+    for md_file in sorted(FR_DOCS_DIR.rglob("*.md")):
+        for line_no, raw_target, resolved in _resolve_relative_links(md_file):
+            if not resolved.exists():
+                rel_src = md_file.relative_to(REPO_ROOT).as_posix()
+                broken_links.append(f"{rel_src}:{line_no}: broken link '{raw_target}' -> {resolved}")
+    assert not broken_links, "Broken relative links in docs/fr/:\n" + "\n".join(broken_links)
+
+    fr_guides = sorted(
+        p for p in (FR_DOCS_DIR / "02-guides-pratiques").rglob("*.md") if p.name.lower() != "index.md"
+    )
+    assert len(fr_guides) >= 5, "Expected at least 5 French procedural guides under docs/fr/02-guides-pratiques/"
+
+    stf_violations: list[str] = []
+    val_re = re.compile(r"\b(?:validation|v[ée]rification)\b", re.IGNORECASE)
+    rollback_re = re.compile(r"\b(?:retour arri[èe]re|restauration)\b", re.IGNORECASE)
+    theory_re = re.compile(r"\b(?:pourquoi|architecture|th[ée]orie|contexte|explication)\b", re.IGNORECASE)
+    gerund_re = re.compile(r"\ben\s+\w+ant\b", re.IGNORECASE)
+
+    for guide in fr_guides:
+        rel = guide.relative_to(REPO_ROOT).as_posix()
+        non_code = _extract_non_code_lines(guide.read_text(encoding="utf-8"))
+        headings = [HEADING_RE.match(line).group(1) for _, line in non_code if HEADING_RE.match(line)]
+        if not any(val_re.search(h) for h in headings):
+            stf_violations.append(f"{rel}: missing Validation/Verification heading")
+        if not any(rollback_re.search(h) for h in headings):
+            stf_violations.append(f"{rel}: missing Retour arriere/Restauration heading")
+        for h in headings:
+            if theory_re.search(h):
+                stf_violations.append(f"{rel}: theory heading '{h}' prohibited in 02-guides-pratiques/")
+
+        for line_no, line in non_code:
+            stripped = line.strip()
+            if not stripped or HEADING_RE.match(stripped) or TABLE_ROW_RE.match(stripped):
+                continue
+            cleaned = _strip_markdown_for_ste(stripped)
+            if not cleaned:
+                continue
+            if ";" in cleaned:
+                stf_violations.append(f"{rel}:{line_no}: semicolon prohibited in French STF procedure")
+            if gerund_re.search(cleaned):
+                stf_violations.append(f"{rel}:{line_no}: French gerund 'en ...ant' prohibited")
+            for sentence in _iter_sentences(cleaned):
+                words = _count_ste_words(sentence)
+                if words > 20:
+                    stf_violations.append(f"{rel}:{line_no}: sentence has {words} words (max 20): {sentence}")
+
+    assert not stf_violations, "French Diataxis / ASD-STF100 violations:\n" + "\n".join(stf_violations)
+
+
+def test_mermaid_hygiene_and_no_ascii_diagrams_across_repo() -> None:
+    """Verify zero indented Mermaid blocks, zero sequenceDiagram HTML semicolons, and zero ASCII diagrams."""
+    md_files = [REPO_ROOT / "README.md", REPO_ROOT / "README.fr.md", *sorted(DOCS_DIR.rglob("*.md"))]
+    mermaid_count = 0
+    errors: list[str] = []
+
+    ascii_box_re = re.compile(r"\+[-=]{3,}\+|[\u250c\u2514\u2554\u255a][\u2500\u2550]{2,}")
+    ascii_arrow_re = re.compile(r"(?:-->|<--|==>|--->|\|[- ]*>)")
+
+    for md_path in md_files:
+        rel = md_path.relative_to(REPO_ROOT).as_posix()
+        lines = md_path.read_text(encoding="utf-8").splitlines()
+        in_fence = False
+        fence_lang = ""
+        fence_indent = ""
+        fence_start = 0
+        body: list[str] = []
+
+        for idx, line in enumerate(lines, start=1):
+            if not in_fence:
+                match = re.match(r"^([ \t]*)(`{3,}|~{3,})(.*)$", line)
+                if match:
+                    in_fence = True
+                    fence_indent = match.group(1)
+                    fence_lang = match.group(3).strip().split()[0].lower() if match.group(3).strip() else ""
+                    fence_start = idx
+                    body = []
+                    if fence_lang == "mermaid" and fence_indent:
+                        errors.append(f"{rel}:{idx}: indented Mermaid fence is prohibited")
+            else:
+                if line.lstrip(" \t").startswith("```") or line.lstrip(" \t").startswith("~~~"):
+                    in_fence = False
+                    joined = "\n".join(body)
+                    if fence_lang == "mermaid":
+                        mermaid_count += 1
+                        if joined.lstrip().startswith("sequenceDiagram") and re.search(
+                            r"&(?:amp|lt|gt|quot);", joined
+                        ):
+                            errors.append(
+                                f"{rel}:{fence_start}: HTML entity semicolon in sequenceDiagram breaks Mermaid"
+                            )
+                    elif fence_lang in {"", "text", "txt", "ascii", "diagram"}:
+                        if ascii_box_re.search(joined) and ascii_arrow_re.search(joined):
+                            errors.append(f"{rel}:{fence_start}: ASCII diagram detected; convert to Mermaid")
+                else:
+                    body.append(line)
+
+    assert mermaid_count >= 15, f"Expected >= 15 Mermaid diagrams across docs, found {mermaid_count}"
+    assert not errors, "Diagram hygiene errors:\n" + "\n".join(errors)

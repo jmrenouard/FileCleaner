@@ -6,6 +6,7 @@ on:
     paths:
       - "docs/**"
       - "mkdocs.yml"
+      - "mkdocs.fr.yml"
       - "README.md"
       - "README.fr.md"
       - "CHANGELOG.md"
@@ -22,6 +23,7 @@ on:
     paths:
       - "docs/**"
       - "mkdocs.yml"
+      - "mkdocs.fr.yml"
       - "README.md"
       - "README.fr.md"
       - "CHANGELOG.md"
@@ -70,5 +72,7 @@ jobs:
         run: |
           pytest tests/test_diataxis_documentation.py tests/test_mkdocs_publishing.py -v
 
-      - name: Build MkDocs site in strict mode
-        run: mkdocs build --strict
+      - name: Build English and French MkDocs sites in strict mode
+        run: |
+          mkdocs build -f mkdocs.yml --strict -d site_en
+          mkdocs build -f mkdocs.fr.yml --strict -d site_fr

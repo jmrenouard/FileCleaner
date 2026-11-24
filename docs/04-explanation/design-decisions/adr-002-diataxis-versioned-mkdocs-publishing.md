@@ -35,12 +35,12 @@ constraints emerged:
 
 ```mermaid
 flowchart LR
-    GIT["Git Tags (v1.0.0, v1.0.1, v*)\n+ main / WORKTREE"] --> BLD["scripts/build_versioned_docs.py\ngit archive + ALWAYS/FALLBACK Overlay"]
-    BLD --> HOOKS["scripts/mkdocs_hooks.py\nGFM Alerts & Slugify · Link Rewrite\nNav Prune · Tag Quadrant Fallback"]
-    HOOKS --> MK["mkdocs build --strict\nMaterial + Mermaid + KaTeX 0.16.11"]
-    MK --> GUARD["assert_no_private_files\nBlock .kdbx, .keyx, .fc-tmp, .pid, .env"]
-    GUARD --> DIST["site_dist/\nversions.json · .htaccess · /main/ · /v*/"]
-    DIST --> SFTP["SHA-Pinned GitHub Actions SFTP\nhttps://filecleaner.lightpath.fr/"]
+    GIT["Git Tags (v1.0.0, v1.0.1, v*)<br/>+ main / WORKTREE"] --> BLD["scripts/build_versioned_docs.py<br/>git archive + ALWAYS/FALLBACK Overlay"]
+    BLD --> HOOKS["scripts/mkdocs_hooks.py<br/>GFM Alerts & Slugify · Link Rewrite<br/>EN/FR Isolation & Tag Fallback"]
+    HOOKS --> MK["mkdocs build --strict<br/>mkdocs.yml (EN) + mkdocs.fr.yml (FR)"]
+    MK --> GUARD["assert_no_private_files<br/>Block .kdbx, .keyx, .fc-tmp, .pid, .env"]
+    GUARD --> DIST["site_dist/<br/>versions.json · .htaccess · /ver/ · /ver/fr/"]
+    DIST --> SFTP["SHA-Pinned GitHub Actions SFTP<br/>https://filecleaner.lightpath.fr/"]
 ```
 
 ## Options Considered and Trade-Offs
@@ -53,22 +53,24 @@ flowchart LR
 
 ## Decision
 
-Adopt **Option C**: organize active operational and architectural documentation into the four canonical Diátaxis
-quadrants (`docs/01-tutorials/`, `docs/02-how-to-guides/`, `docs/03-reference/`, `docs/04-explanation/`), retain the
-existing bilingual EN/FR manuals and governance registers inside a 6-tab MkDocs Material navigation (`Home`,
-`Tutorials`, `How-To Guides`, `Reference`, `Explanation`, `Releases & Governance`), and publish versioned static sites
-to `https://filecleaner.lightpath.fr/` using `scripts/build_versioned_docs.py` and `scripts/mkdocs_hooks.py`.
+Adopt **Option C**: organize active operational and architectural documentation into parallel English and French
+four-quadrant Diátaxis trees (`docs/01-tutorials/`..`docs/04-explanation/` and
+`docs/fr/01-tutoriels/`..`docs/fr/04-explications/`), separate English and French MkDocs Material builds via
+`mkdocs.yml` (`language: en`) and `mkdocs.fr.yml` (`language: fr`) with a dynamic `extra.alternate` switcher, and
+publish versioned static sites to `https://filecleaner.lightpath.fr/` using `scripts/build_versioned_docs.py` and
+`scripts/mkdocs_hooks.py`.
 
 Key implementation mechanisms include:
 
 1. **Non-Destructive Historical Tag Overlay**: `scripts/build_versioned_docs.py` extracts each semver tag via
-   `git archive`, overlays `ALWAYS_OVERLAY_FILES` (`mkdocs.yml`, `scripts/mkdocs_hooks.py`, `docs/stylesheets/extra.css`,
-   `docs/javascripts/katex.js`) and `FALLBACK_OVERLAY_FILES` (`docs/index.md`, `docs/assets/logo.svg`,
-   `docs/assets/header-banner.svg`), and compiles each snapshot under `mkdocs build --strict`.
-2. **Depth-Aware Hook & Historical Fallback (`scripts/mkdocs_hooks.py`)**:
-   - Injects virtual root documents (`overview-en.md` from `README.md`, `overview-fr.md` from `README.fr.md`,
-     `CHANGELOG.md`) and converts GitHub `[!NOTE|TIP|IMPORTANT|WARNING|CAUTION]` alerts plus GFM heading slugs
-     (`gfm_slugify`).
+   `git archive`, overlays `ALWAYS_OVERLAY_FILES` (`mkdocs.yml`, `mkdocs.fr.yml`, `scripts/mkdocs_hooks.py`,
+   `docs/stylesheets/extra.css`, `docs/javascripts/katex.js`) and `FALLBACK_OVERLAY_FILES` (`docs/index.md`,
+   `docs/fr/index.md`, `docs/assets/logo.svg`, `docs/assets/header-banner.svg`), and compiles EN into `<ver>/` plus
+   FR into `<ver>/fr/` under `mkdocs build --strict`.
+2. **Language-Isolated Hooks & Historical Fallback (`scripts/mkdocs_hooks.py`)**:
+   - Injects language-scoped virtual root documents (`overview-en.md` or `overview-fr.md`, plus `CHANGELOG.md`),
+     remaps `docs/fr/` to the French sub-site root `/<ver>/fr/`, converts GitHub `[!NOTE|TIP|IMPORTANT|WARNING|CAUTION]`
+     alerts, attaches GFM heading slugs (`gfm_slugify`), and synchronizes `extra.alternate` links per version slug.
    - Rewrites both Markdown links and HTML `<img src>`/`<a href>` attributes using exact depth calculations (`md_d` vs
      `html_d`), normalizes historical `v1.0.1` `docs/docs/` paths, redirects external repo paths (`src/`, `tests/`,
      `examples/`, `Cargo.toml`) to pinned GitHub ref URLs, and maps missing historical quadrant directories (`v1.0.0`,

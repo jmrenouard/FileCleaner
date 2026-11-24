@@ -111,12 +111,12 @@ without mixing tutorials, operational runbooks, reference tables, and architectu
     - [ADR-002: Versioned MkDocs Publishing](04-explanation/design-decisions/adr-002-diataxis-versioned-mkdocs-publishing.md)
     - [Retention Calculus & TOCTOU Defenses](04-explanation/deep-dives/retention-calculus-and-toctou-defenses.md)
 
--   :material-translate:{ .lg .middle } **Bilingual EN / FR Guides**
+-   :material-translate:{ .lg .middle } **English & French Editions**
 
     ---
 
-    Access synchronized English and French beginner quickstarts, complete user manuals, production cookbooks, and
-    formal engineering specifications.
+    Access the dedicated [French Diátaxis Portal](fr/index.md) or browse the paired bilingual user manuals,
+    production cookbooks, and formal engineering specifications.
 
     - [5-Minute HOWTO (EN)](en/HOWTO.md) · [HOWTO 5 Minutes (FR)](fr/HOWTO.md)
     - [User & Operations Guide (EN)](en/USER_GUIDE.md) · [Guide Utilisateur (FR)](fr/GUIDE_UTILISATEUR.md)

@@ -15,6 +15,14 @@ exclude_docs: |
   *.log
   .env
   .env.*
+  /fr/
+  *_fr.md
+  *-fr.md
+  /overview-fr.md
+  /01-tutoriels/
+  /02-guides-pratiques/
+  /03-reference-fr/
+  /04-explications/
 
 hooks:
   - scripts/mkdocs_hooks.py
@@ -58,6 +66,13 @@ plugins:
   - search
 
 extra:
+  alternate:
+    - name: English
+      link: /main/
+      lang: en
+    - name: Français
+      link: /main/fr/
+      lang: fr
   version:
     provider: mike
     default: latest
@@ -116,8 +131,7 @@ nav:
       - Local Retention Sandbox: 01-tutorials/01-local-retention-sandbox.md
       - Backup Guard & In-Use Lab: 01-tutorials/02-backup-guard-and-in-use-lab.md
       - PostgreSQL WAL & S3 Docker Lab: 01-tutorials/03-postgres-wal-s3-docker-lab.md
-      - 5-Minute HOWTO (EN): en/HOWTO.md
-      - HOWTO 5 Minutes (FR): fr/HOWTO.md
+      - 5-Minute HOWTO: en/HOWTO.md
   - How-To Guides:
       - 02-how-to-guides/index.md
       - Deployment:
@@ -130,8 +144,7 @@ nav:
       - Security:
           - Enforce Pre-Delete Hooks and TOCTOU Guards: 02-how-to-guides/security/enforce-pre-delete-hooks-and-toctou-guards.md
       - Production Cookbooks:
-          - Cookbook Examples (EN): en/COOKBOOK_EXAMPLES.md
-          - Exemples & Recettes (FR): fr/EXEMPLES_RECETTES.md
+          - Cookbook Examples: en/COOKBOOK_EXAMPLES.md
   - Reference:
       - 03-reference/index.md
       - Configuration:
@@ -141,10 +154,8 @@ nav:
       - Troubleshooting Codes:
           - Error & Alert Matrix: 03-reference/troubleshooting-codes/error-and-alert-matrix.md
       - Complete Manuals:
-          - User & Operations Guide (EN): en/USER_GUIDE.md
-          - Guide Utilisateur (FR): fr/GUIDE_UTILISATEUR.md
-          - Formal Specifications (EN): en/SPECIFICATIONS.md
-          - Spécifications Formelles (FR): fr/SPECIFICATIONS.md
+          - User & Operations Guide: en/USER_GUIDE.md
+          - Formal Specifications: en/SPECIFICATIONS.md
   - Explanation:
       - 04-explanation/index.md
       - Architecture Overview:
@@ -155,8 +166,7 @@ nav:
       - Deep Dives:
           - Retention Calculus & TOCTOU Defenses: 04-explanation/deep-dives/retention-calculus-and-toctou-defenses.md
       - Project Overviews:
-          - Overview (English): overview-en.md
-          - Aperçu (Français): overview-fr.md
+          - Overview: overview-en.md
           - Dev-Team Alignment Session: team-sessions/team-session-2026-11-20.md
   - Releases & Governance:
       - Changelog: CHANGELOG.md

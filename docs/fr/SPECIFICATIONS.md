@@ -35,12 +35,12 @@ Chaque passe d'évaluation (*sweep*) d'une règle exécute six phases strictemen
 
 ```mermaid
 flowchart LR
-    P1["1. Scan\nWalkdir + Filtres\nTri TimeBasis"] --> P2["2. InUseProbe\nMatrice 6 couches\nPartition S_busy"]
-    P2 --> P3["3. BackupGuard\nF_valid >= B_min\nFraîcheur + P_floor"]
-    P3 --> P4["4. RetentionEval\nNombre / Âge / Taille\nSweepPlan"]
-    P4 --> P5["5. PreHook\nEnv + Args (Sans Shell)\nCode 0 / 42 / Politique"]
-    P5 --> P6["6. Execute\nAtomique / SHA-256\nOu parité DryRun"]
-    P6 --> AUD["Journal d'audit JSONL &\nÉtat JSON du démon"]
+    P1["1. Scan<br/>Walkdir + Filtres<br/>Tri TimeBasis"] --> P2["2. InUseProbe<br/>Matrice 6 couches<br/>Partition S_busy"]
+    P2 --> P3["3. BackupGuard<br/>F_valid >= B_min<br/>Fraîcheur + P_floor"]
+    P3 --> P4["4. RetentionEval<br/>Nombre / Âge / Taille<br/>SweepPlan"]
+    P4 --> P5["5. PreHook<br/>Env + Args (Sans Shell)<br/>Code 0 / 42 / Politique"]
+    P5 --> P6["6. Execute<br/>Atomique / SHA-256<br/>Ou parité DryRun"]
+    P6 --> AUD["Journal d'audit JSONL &<br/>État JSON du démon"]
 ```
 
 Garanties architecturales appliquées à chaque phase :
@@ -833,10 +833,10 @@ Valeurs valides de `status` : `"starting"`, `"idle"`, `"sweeping"`, `"stopping"`
 
 ```mermaid
 sequenceDiagram
-    participant OS as Signal OS / Fichier d'arrêt
+    participant OS as Signal OS ou Fichier d'arrêt
     participant D as Boucle du démon
     participant E as Moteur de passe actif
-    participant S as État JSON & Fichier PID
+    participant S as État JSON et Fichier PID
 
     D->>S: Écrire PID + status="starting" (atomique .fc-tmp)
     loop Tant que !shutdown && sweeps < max_sweeps

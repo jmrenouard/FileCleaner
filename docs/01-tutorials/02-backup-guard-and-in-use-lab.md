@@ -13,9 +13,9 @@
 
 Make sure your environment meets these requirements:
 
-- `filecleaner` v1.1.0+ binary on `PATH`
+- `filecleaner` binary on `PATH` (release `v1.0.1` or `1.1.0` built from `main`)
 - `python3` (used to hold an exclusive POSIX `flock` lock in the background)
-- Unix shell (`bash`) with `truncate` and GNU `touch`
+- Unix shell (`bash`) with `truncate` and `touch` (GNU `date -d` / `touch -d`, or macOS/BSD `-v` / `-t`)
 
 ---
 

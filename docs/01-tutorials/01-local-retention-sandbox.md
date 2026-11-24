@@ -13,8 +13,8 @@
 
 Make sure your workstation meets these requirements before starting:
 
-- `filecleaner` v1.1.0+ binary installed on your `PATH` (or built via `cargo build --bin filecleaner`)
-- Standard Unix shell (`bash`) with GNU `touch` (`-d` flag) and `mktemp`
+- `filecleaner` binary installed on your `PATH` (from release `v1.0.1`, or `1.1.0` built from `main` via `cargo build --bin filecleaner`)
+- Standard Unix shell (`bash`) with `touch` (GNU `-d` or macOS/BSD `-t`) and `mktemp`
 - Minimum `10 MiB` free temporary space under `/tmp`
 
 Verify the binary is accessible:
@@ -62,6 +62,9 @@ touch -d "20 days ago" /tmp/fc-sandbox/incoming/app-old-1.log
 touch -d "15 days ago" /tmp/fc-sandbox/incoming/app-old-2.log
 touch -d "2 days ago" /tmp/fc-sandbox/incoming/app-recent.log
 ```
+
+> [!NOTE]
+> On macOS or FreeBSD where GNU `touch -d` is unavailable, substitute `touch -t "$(date -v-20d +%Y%m%d%H%M)"` (and `-v-15d`, `-v-2d`).
 
 List the sandbox files to confirm their timestamps:
 

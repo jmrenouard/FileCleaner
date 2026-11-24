@@ -46,7 +46,7 @@ Téléchargez l'archive adaptée à votre système depuis [GitHub Releases](http
 #### Installation & vérification SHA-256 sous Linux / macOS
 
 ```bash
-VERSION="v1.1.0"
+VERSION="v1.0.1"   # Dernier tag GitHub Release publié
 TARGET="x86_64-unknown-linux-musl"   # ou aarch64-apple-darwin, etc.
 
 curl -fLO "https://github.com/jmrenouard/FileCleaner/releases/download/${VERSION}/filecleaner-${VERSION}-${TARGET}.tar.gz"
@@ -61,7 +61,7 @@ filecleaner --version
 #### Installation & vérification SHA-256 sous Windows PowerShell
 
 ```powershell
-$Version = "v1.1.0"
+$Version = "v1.0.1"   # Dernier tag GitHub Release publié
 $Target  = "x86_64-pc-windows-msvc"
 $Archive = "filecleaner-$Version-$Target.zip"
 
@@ -79,8 +79,11 @@ Expand-Archive -Path $Archive -DestinationPath "$Env:ProgramFiles\FileCleaner" -
 Requiert Rust Édition 2021 (`rustc >= 1.75`). Grâce à l'absence totale de crates C `-sys`, aucun compilateur `gcc`, `cmake` ni en-tête OpenSSL n'est nécessaire :
 
 ```bash
-# Installation directe depuis GitHub
-cargo install --git https://github.com/jmrenouard/FileCleaner --tag v1.1.0 --locked
+# Installation directe du dernier tag publié depuis GitHub
+cargo install --git https://github.com/jmrenouard/FileCleaner --tag v1.0.1 --locked
+
+# Ou installation de la branche de développement main (1.1.0)
+cargo install --git https://github.com/jmrenouard/FileCleaner --branch main --locked
 
 # Ou compilation locale depuis le dépôt
 git clone https://github.com/jmrenouard/FileCleaner.git
@@ -95,10 +98,10 @@ Les images multiplateformes (`linux/amd64` et `linux/arm64`) s'exécutent sous l
 
 ```bash
 # Vérifier la version de l'image
-docker run --rm jmrenouard/filecleaner:1.1.0 --version
+docker run --rm jmrenouard/filecleaner:v1.0.1 --version
 
 # Simuler un nettoyage sur un dossier hôte monté dans /data
-docker run --rm -v "$(pwd)/data:/data" jmrenouard/filecleaner:1.1.0 plan --dir /data --max-age 14d
+docker run --rm -v "$(pwd)/data:/data" jmrenouard/filecleaner:v1.0.1 plan --dir /data --max-age 14d
 ```
 
 ---

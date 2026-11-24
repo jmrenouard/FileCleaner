@@ -44,11 +44,11 @@
 
 | Pilier | Édition Française | English Edition |
 | :--- | :--- | :--- |
-| **Portail documentaire versionné** | [**Portail MkDocs en ligne (`https://filecleaner.lightpath.fr/`)**](https://filecleaner.lightpath.fr/) · [**Accueil Diátaxis (`docs/index.md`)**](docs/index.md) | [**Online MkDocs Portal (`https://filecleaner.lightpath.fr/`)**](https://filecleaner.lightpath.fr/) · [**Diátaxis Home (`docs/index.md`)**](docs/index.md) |
-| **1. Tutoriels (`docs/01-tutorials/`)** | [**Index Tutoriels (`docs/01-tutorials/index.md`)**](docs/01-tutorials/index.md) · [**HOWTO 5 minutes (`docs/fr/HOWTO.md`)**](docs/fr/HOWTO.md) | [**Tutorials Index (`docs/01-tutorials/index.md`)**](docs/01-tutorials/index.md) · [**5-Minute HOWTO (`docs/en/HOWTO.md`)**](docs/en/HOWTO.md) |
-| **2. Guides pratiques (`docs/02-how-to-guides/`)** | [**Index Guides pratiques (`docs/02-how-to-guides/index.md`)**](docs/02-how-to-guides/index.md) · [**Exemples & Recettes (`docs/fr/EXEMPLES_RECETTES.md`)**](docs/fr/EXEMPLES_RECETTES.md) | [**How-To Guides Index (`docs/02-how-to-guides/index.md`)**](docs/02-how-to-guides/index.md) · [**Cookbook Examples (`docs/en/COOKBOOK_EXAMPLES.md`)**](docs/en/COOKBOOK_EXAMPLES.md) |
-| **3. Référence (`docs/03-reference/`)** | [**Index Référence (`docs/03-reference/index.md`)**](docs/03-reference/index.md) · [**Guide utilisateur (`docs/fr/GUIDE_UTILISATEUR.md`)**](docs/fr/GUIDE_UTILISATEUR.md) | [**Reference Index (`docs/03-reference/index.md`)**](docs/03-reference/index.md) · [**User Guide (`docs/en/USER_GUIDE.md`)**](docs/en/USER_GUIDE.md) |
-| **4. Explications (`docs/04-explanation/`)** | [**Index Explications (`docs/04-explanation/index.md`)**](docs/04-explanation/index.md) · [**Spécifications formelles (`docs/fr/SPECIFICATIONS.md`)**](docs/fr/SPECIFICATIONS.md) | [**Explanation Index (`docs/04-explanation/index.md`)**](docs/04-explanation/index.md) · [**Formal Specifications (`docs/en/SPECIFICATIONS.md`)**](docs/en/SPECIFICATIONS.md) |
+| **Portail documentaire versionné** | [**Portail MkDocs en ligne (`https://filecleaner.lightpath.fr/fr/`)**](https://filecleaner.lightpath.fr/fr/) · [**Accueil Diátaxis (`docs/fr/index.md`)**](docs/fr/index.md) | [**Online MkDocs Portal (`https://filecleaner.lightpath.fr/`)**](https://filecleaner.lightpath.fr/) · [**Diátaxis Home (`docs/index.md`)**](docs/index.md) |
+| **1. Tutoriels (`docs/fr/01-tutoriels/`)** | [**Index Tutoriels (`docs/fr/01-tutoriels/index.md`)**](docs/fr/01-tutoriels/index.md) · [**HOWTO 5 minutes (`docs/fr/HOWTO.md`)**](docs/fr/HOWTO.md) | [**Tutorials Index (`docs/01-tutorials/index.md`)**](docs/01-tutorials/index.md) · [**5-Minute HOWTO (`docs/en/HOWTO.md`)**](docs/en/HOWTO.md) |
+| **2. Guides pratiques (`docs/fr/02-guides-pratiques/`)** | [**Index Guides pratiques (`docs/fr/02-guides-pratiques/index.md`)**](docs/fr/02-guides-pratiques/index.md) · [**Exemples & Recettes (`docs/fr/EXEMPLES_RECETTES.md`)**](docs/fr/EXEMPLES_RECETTES.md) | [**How-To Guides Index (`docs/02-how-to-guides/index.md`)**](docs/02-how-to-guides/index.md) · [**Cookbook Examples (`docs/en/COOKBOOK_EXAMPLES.md`)**](docs/en/COOKBOOK_EXAMPLES.md) |
+| **3. Référence (`docs/fr/03-reference/`)** | [**Index Référence (`docs/fr/03-reference/index.md`)**](docs/fr/03-reference/index.md) · [**Guide utilisateur (`docs/fr/GUIDE_UTILISATEUR.md`)**](docs/fr/GUIDE_UTILISATEUR.md) | [**Reference Index (`docs/03-reference/index.md`)**](docs/03-reference/index.md) · [**User Guide (`docs/en/USER_GUIDE.md`)**](docs/en/USER_GUIDE.md) |
+| **4. Explications (`docs/fr/04-explications/`)** | [**Index Explications (`docs/fr/04-explications/index.md`)**](docs/fr/04-explications/index.md) · [**Spécifications formelles (`docs/fr/SPECIFICATIONS.md`)**](docs/fr/SPECIFICATIONS.md) | [**Explanation Index (`docs/04-explanation/index.md`)**](docs/04-explanation/index.md) · [**Formal Specifications (`docs/en/SPECIFICATIONS.md`)**](docs/en/SPECIFICATIONS.md) |
 | **Présentation & Démarrage** | [**`README.fr.md`**](README.fr.md) | [**`README.md`**](README.md) |
 | **Journal des versions** | [**`CHANGELOG.md`**](CHANGELOG.md) · [**Notes de version v1.0.1 (`docs/RELEASE_NOTES_v1.0.1.md`)**](docs/RELEASE_NOTES_v1.0.1.md) | [**`CHANGELOG.md`**](CHANGELOG.md) · [**Release Notes v1.0.1 (`docs/RELEASE_NOTES_v1.0.1.md`)**](docs/RELEASE_NOTES_v1.0.1.md) |
 | **Traçabilité d'ingénierie** | [**Journal d'actions (`docs/ACTION_LOGBOOK.md`)**](docs/ACTION_LOGBOOK.md) · [**Registre RCA (`docs/RCA_REGISTER.md`)**](docs/RCA_REGISTER.md) · [**Session d'alignement (`docs/team-sessions/team-session-2026-11-20.md`)**](docs/team-sessions/team-session-2026-11-20.md) | — |
@@ -124,11 +124,13 @@ docker run --rm jmrenouard/filecleaner:latest --version
 docker run --rm -v "$(pwd)/data:/data" jmrenouard/filecleaner:latest plan --dir /data --max-age 14d
 
 # Option 2 : Compiler et installer via Cargo (Rust >= 1.75 / Édition 2021)
-cargo install --git https://github.com/jmrenouard/FileCleaner --tag v1.1.0 --locked
+cargo install --git https://github.com/jmrenouard/FileCleaner --tag v1.0.1 --locked
+# Ou compiler la branche de développement main (1.1.0) :
+cargo install --git https://github.com/jmrenouard/FileCleaner --branch main --locked
 
-# Option 3 : Télécharger un binaire précompilé sur GitHub Releases (ex. Linux x86_64 musl)
-curl -LO https://github.com/jmrenouard/FileCleaner/releases/download/v1.1.0/filecleaner-v1.1.0-x86_64-unknown-linux-musl.tar.gz
-tar -xzf filecleaner-v1.1.0-x86_64-unknown-linux-musl.tar.gz
+# Option 3 : Télécharger un binaire précompilé sur GitHub Releases (ex. Linux x86_64 musl v1.0.1)
+curl -LO https://github.com/jmrenouard/FileCleaner/releases/download/v1.0.1/filecleaner-v1.0.1-x86_64-unknown-linux-musl.tar.gz
+tar -xzf filecleaner-v1.0.1-x86_64-unknown-linux-musl.tar.gz
 sudo install -m 0755 filecleaner /usr/local/bin/filecleaner
 ```
 

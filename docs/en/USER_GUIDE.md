@@ -46,7 +46,7 @@ Download the archive matching your OS and architecture from [GitHub Releases](ht
 #### Linux / macOS Install & Checksum Verification
 
 ```bash
-VERSION="v1.1.0"
+VERSION="v1.0.1"   # Latest published GitHub Release tag
 TARGET="x86_64-unknown-linux-musl"   # or aarch64-apple-darwin, etc.
 
 curl -fLO "https://github.com/jmrenouard/FileCleaner/releases/download/${VERSION}/filecleaner-${VERSION}-${TARGET}.tar.gz"
@@ -61,7 +61,7 @@ filecleaner --version
 #### Windows PowerShell Install & Checksum Verification
 
 ```powershell
-$Version = "v1.1.0"
+$Version = "v1.0.1"   # Latest published GitHub Release tag
 $Target  = "x86_64-pc-windows-msvc"
 $Archive = "filecleaner-$Version-$Target.zip"
 
@@ -79,8 +79,11 @@ Expand-Archive -Path $Archive -DestinationPath "$Env:ProgramFiles\FileCleaner" -
 Requires Rust Edition 2021 (`rustc >= 1.75`). Because FileCleaner uses zero C `-sys` crates, no `gcc`, `cmake`, or OpenSSL headers are required:
 
 ```bash
-# Install directly from GitHub
-cargo install --git https://github.com/jmrenouard/FileCleaner --tag v1.1.0 --locked
+# Install latest release tag directly from GitHub
+cargo install --git https://github.com/jmrenouard/FileCleaner --tag v1.0.1 --locked
+
+# Or install the main development branch (1.1.0)
+cargo install --git https://github.com/jmrenouard/FileCleaner --branch main --locked
 
 # Or clone and build a local release binary
 git clone https://github.com/jmrenouard/FileCleaner.git
@@ -95,10 +98,10 @@ Multi-architecture images (`linux/amd64` and `linux/arm64`) run as unprivileged 
 
 ```bash
 # Verify image version cleanly
-docker run --rm jmrenouard/filecleaner:1.1.0 --version
+docker run --rm jmrenouard/filecleaner:v1.0.1 --version
 
 # Preview cleanup on a host directory mounted into /data
-docker run --rm -v "$(pwd)/data:/data" jmrenouard/filecleaner:1.1.0 plan --dir /data --max-age 14d
+docker run --rm -v "$(pwd)/data:/data" jmrenouard/filecleaner:v1.0.1 plan --dir /data --max-age 14d
 ```
 
 ---
